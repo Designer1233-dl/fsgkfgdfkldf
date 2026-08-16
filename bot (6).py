@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -27,21 +28,71 @@ CRYPTO_PAY_API_URL = os.getenv("CRYPTO_PAY_API_URL", "https://pay.crypt.bot/api"
 USERS_FILE = Path(__file__).with_name("broadcast_users.json")
 ADMINS_FILE = Path(__file__).with_name("extra_admins.json")
 PROFILES_FILE = Path(__file__).with_name("user_profiles.json")
+PENDING_MINI_MONEY2_FILE = Path(__file__).with_name("pending_mini_money2_invoices.json")
 
 # Меняй только эту одну строку.
 BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
 
 MAX_MINI_PLAYERS = 6
+MAX_CUBE_SURVIVOR_PLAYERS = 6
+MAX_DART_COLOR_PLAYERS = 6
+MAX_WATERMELON_PLAYERS = 20
+MAX_COSMO_PLAYERS = 12
 MINI_JOIN_COOLDOWN_SECONDS = 5
 ROLL_DELETE_DELAY_SECONDS = 12
+WATERMELON_EMOJIS = [
+    "🍉",
+    "🍓",
+    "🍇",
+    "🍒",
+    "🍍",
+    "🥝",
+    "🍋",
+    "🍊",
+    "🍑",
+    "🍏",
+    "🍎",
+    "🥥",
+    "🍌",
+    "🍐",
+    "🥭",
+    "🫐",
+    "🍈",
+    "🍅",
+    "🫒",
+    "🥑",
+]
+COSMO_EMOJIS = [
+    "🌕",
+    "🪐",
+    "☄️",
+    "🌟",
+    "🌙",
+    "⭐",
+    "🌍",
+    "🌑",
+    "🌠",
+    "🛰️",
+    "🚀",
+    "👽",
+]
 KIND_TITLES = {
     "mini_money2": "Mini Babki 2",
+    "darts_colors": "Дартс команды",
+    "cube_survivor": "Кубик на выбывание",
+    "watermelon": "Арбузная фруттела",
+    "cosmo": "Космо рулетка",
     "mini": "Мини-розыгрыш",
     "classic": "Розыгрыш",
     "duel": "Дуэль",
     "darts": "Дартс-дуэль",
     "bowling": "Боулинг-дуэль",
     "football": "Футбол-дуэль",
+}
+
+DART_COLOR_TEAM_LABELS = {
+    "red": "Красная команда",
+    "white": "Белая команда",
 }
 
 if not TOKEN or not ADMIN_ID_RAW or not CHANNEL_ID_RAW:
@@ -133,7 +184,7 @@ def crypto_check_url(result: dict) -> Optional[str]:
 
 async def crypto_pay_request(method: str, payload: dict) -> dict:
     if not CRYPTO_PAY_TOKEN:
-        raise RuntimeError("Set CRYPTO_PAY_TOKEN for Mini Babki 2")
+        raise RuntimeError("Set CRYPTO_PAY_TOKEN for crypto giveaways")
 
     async with aiohttp.ClientSession(headers={"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}) as session:
         async with session.post(f"{CRYPTO_PAY_API_URL.rstrip('/')}/{method}", json=payload) as response:
@@ -144,13 +195,15 @@ async def crypto_pay_request(method: str, payload: dict) -> dict:
     return data["result"]
 
 
-async def create_crypto_invoice(amount_usd: str, title: str) -> dict:
+async def create_crypto_invoice(amount_usd: str, title: str, kind: str = "mini_money2") -> dict:
+    payload = f"{kind}:{uuid4().hex}"
     result = await crypto_pay_request(
         "createInvoice",
         {
             "asset": "USDT",
             "amount": amount_usd,
             "description": title,
+            "payload": payload,
             "paid_btn_name": "viewItem",
             "paid_btn_url": f"https://t.me/{BRAND_USERNAME.lstrip('@')}",
         },
@@ -158,7 +211,14 @@ async def create_crypto_invoice(amount_usd: str, title: str) -> dict:
     url = crypto_invoice_url(result)
     if not url:
         raise RuntimeError("Crypto Pay API did not return invoice URL")
-    return {"invoice_id": result.get("invoice_id") or result.get("id"), "url": url}
+    return {
+        "invoice_id": result.get("invoice_id") or result.get("id"),
+        "url": url,
+        "hash": result.get("hash"),
+        "payload": result.get("payload") or payload,
+        "description": result.get("description") or title,
+        "amount": result.get("amount") or amount_usd,
+    }
 
 
 async def create_crypto_check(amount_usd: str, winner: dict) -> dict:
@@ -180,6 +240,19 @@ async def get_crypto_app() -> dict:
     return result if isinstance(result, dict) else {}
 
 
+def crypto_result_items(result: Any, *keys: str) -> List[dict]:
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+
+    if isinstance(result, dict):
+        for key in keys:
+            value = result.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+    return []
+
+
 async def get_crypto_checks(
     *,
     status: Optional[str] = None,
@@ -194,7 +267,7 @@ async def get_crypto_checks(
         payload["check_ids"] = ",".join(str(check_id) for check_id in check_ids)
 
     result = await crypto_pay_request("getChecks", payload)
-    return result if isinstance(result, list) else []
+    return crypto_result_items(result, "items", "checks")
 
 
 async def get_crypto_invoices(
@@ -211,7 +284,7 @@ async def get_crypto_invoices(
         payload["invoice_ids"] = ",".join(str(invoice_id) for invoice_id in invoice_ids)
 
     result = await crypto_pay_request("getInvoices", payload)
-    return result if isinstance(result, list) else []
+    return crypto_result_items(result, "items", "invoices")
 
 
 async def delete_crypto_check(check_id: int) -> None:
@@ -288,6 +361,40 @@ def save_user_profiles() -> None:
         logging.exception("Could not save user profiles")
 
 
+def load_pending_mini_money2_invoices() -> Dict[int, dict]:
+    if not PENDING_MINI_MONEY2_FILE.exists():
+        return {}
+
+    try:
+        raw = json.loads(PENDING_MINI_MONEY2_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        logging.exception("Could not load pending Mini Babki 2 invoices")
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    pending: Dict[int, dict] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            invoice_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        pending[invoice_id] = dict(value)
+        pending[invoice_id]["crypto_invoice_id"] = invoice_id
+    return pending
+
+
+def save_pending_mini_money2_invoices() -> None:
+    try:
+        payload = json.dumps(pending_mini_money2_invoices, ensure_ascii=False, indent=2)
+        PENDING_MINI_MONEY2_FILE.write_text(payload, encoding="utf-8")
+    except Exception:
+        logging.exception("Could not save pending Mini Babki 2 invoices")
+
+
 def load_known_users() -> set[int]:
     if not USERS_FILE.exists():
         return set()
@@ -351,6 +458,7 @@ def remember_user(user_id: int, username: Optional[str] = None, name: Optional[s
 known_users = load_known_users()
 extra_admin_ids = load_extra_admins()
 user_profiles = load_user_profiles()
+pending_mini_money2_invoices = load_pending_mini_money2_invoices()
 
 
 def is_owner(user_id: int) -> bool:
@@ -559,21 +667,135 @@ def promo_lines() -> List[str]:
     ]
 
 
+def parse_subscription_targets(raw_text: str) -> List[dict]:
+    targets: List[dict] = []
+    seen: set[str] = set()
+    normalized_text = raw_text.replace("\n", ",").replace(";", ",")
+    for chunk in normalized_text.split(","):
+        token = chunk.strip()
+        if not token:
+            continue
+        token = token.split("?")[0].strip().rstrip("/")
+        if "t.me/" in token:
+            token = token.split("t.me/", 1)[1]
+            token = token.split("/", 1)[0].strip()
+            if token.startswith("+"):
+                raise ValueError("Инвайт-ссылки вида t.me/+... не подходят. Укажи публичный @username или chat_id.")
+            token = f"@{token.lstrip('@')}"
+
+        if token.startswith("@"):
+            chat_id: int | str = token
+            label = token
+            url = f"https://t.me/{token.lstrip('@')}"
+        elif token.startswith("-100") or token.lstrip("-").isdigit():
+            try:
+                chat_id = int(token)
+            except ValueError as exc:
+                raise ValueError(f"Не удалось разобрать chat_id: {token}") from exc
+            label = token
+            url = None
+        else:
+            raise ValueError(f"Неизвестный формат условия подписки: {token}")
+
+        unique_key = str(chat_id)
+        if unique_key in seen:
+            continue
+        seen.add(unique_key)
+        targets.append({"chat_id": chat_id, "label": label, "url": url})
+    return targets
+
+
+def subscription_lines(targets: List[dict]) -> List[str]:
+    if not targets:
+        return []
+    lines = ["🔔 <b>Обязательная подписка:</b>"]
+    for target in targets:
+        label = str(target.get("label") or target.get("chat_id") or "")
+        url = target.get("url")
+        if url:
+            lines.append(f"• <a href=\"{escape(str(url))}\">{escape(label)}</a>")
+        else:
+            lines.append(f"• {escape(label)}")
+    return lines
+
+
 def participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
     if not giveaway.participants:
         return [empty_text]
     return [f"{index}. {user_label(user)}" for index, user in enumerate(giveaway.participants, start=1)]
 
 
+def watermelon_slot_emoji(index: int) -> str:
+    return WATERMELON_EMOJIS[index % len(WATERMELON_EMOJIS)]
+
+
+def watermelon_participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
+    if not giveaway.participants:
+        return [empty_text]
+    return [
+        f"{watermelon_slot_emoji(index - 1)} {user_label(user)}"
+        for index, user in enumerate(giveaway.participants, start=1)
+    ]
+
+
+def watermelon_slot_for_user(users: List[dict], target: dict) -> str:
+    for index, user in enumerate(users):
+        if user.get("id") == target.get("id"):
+            return watermelon_slot_emoji(index)
+    return "🍉"
+
+
+def cosmo_slot_emoji(index: int) -> str:
+    return COSMO_EMOJIS[index % len(COSMO_EMOJIS)]
+
+
+def cosmo_participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
+    if not giveaway.participants:
+        return [empty_text]
+    return [
+        f"{cosmo_slot_emoji(index - 1)} {user_label(user)}"
+        for index, user in enumerate(giveaway.participants, start=1)
+    ]
+
+
+def cosmo_slot_for_user(users: List[dict], target: dict) -> str:
+    for index, user in enumerate(users):
+        if user.get("id") == target.get("id"):
+            return cosmo_slot_emoji(index)
+    return "🌕"
+
+
+def cube_numbers_block(participants: List[dict], numbers: List[List[int]]) -> List[str]:
+    lines: List[str] = []
+    for user, assigned in zip(participants, numbers):
+        lines.append(f"• {user_label(user)} — <b>{', '.join(str(item) for item in assigned)}</b>")
+    return lines
+
+
+def darts_color_slot_label(index: int) -> str:
+    number = index + 1
+    team = "🔴" if number <= 3 else "⚪"
+    return f"{team} #{number}"
+
+
+def darts_color_team_key_from_roll(roll: int) -> str:
+    return "red" if roll % 2 else "white"
+
+
+def darts_color_participants_block(giveaway: Giveaway, empty_text: str) -> List[str]:
+    if not giveaway.participants:
+        return [empty_text]
+    return [
+        f"{darts_color_slot_label(index)} {user_label(user)}"
+        for index, user in enumerate(giveaway.participants)
+    ]
+
+
 def mini_text(giveaway: Giveaway) -> str:
     lines = [
         f"🎉 <b>{branded_title('БЫСТРЫЙ МИНИ-РОЗЫГРЫШ')}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
-        "",
-        *promo_lines(),
-        "",
         "📋 <b>Список участников:</b>",
         *participants_block(giveaway, "Пока пусто, можешь быть первым."),
     ]
@@ -582,36 +804,81 @@ def mini_text(giveaway: Giveaway) -> str:
 
 def mini_money2_text(giveaway: Giveaway) -> str:
     lines = [
-        f"🤑 <b>{branded_title('MINI BABKI 2')}</b>",
-        "",
+        f"🤑 <b>{branded_title('Халява')}</b>",
         f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
         f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
-        "",
-        "🎲 <b>Механика:</b> у каждого свой номер в списке, бот кидает один кубик.",
-        "🏆 <b>Побеждает номер, который выпадет на кубике.</b>",
-        "",
-        "🎁 <b>Приз выдаётся победителю автоматически.</b>",
-        "",
-        *promo_lines(),
-        "",
+        "🎲 <b>Механика:</b> один кубик решает победителя по номеру входа.",
         "📋 <b>Список участников:</b>",
         *participants_block(giveaway, "Пока пусто, можешь быть первым."),
     ]
     return "\n".join(lines)
 
 
+def darts_colors_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🎯 <b>{branded_title('ДАРТС КОМАНДЫ')}</b>",
+        f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
+        f"👥 <b>Игроков:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "🎨 <b>Механика:</b> 1-3 играют за красных, 4-6 за белых.",
+        "🎲 <b>Финал:</b> победившая тройка делит номера 1-2, 3-4, 5-6.",
+        "📋 <b>Слоты:</b>",
+        *darts_color_participants_block(giveaway, "Пока пусто, можешь занять первый слот."),
+    ]
+    return "\n".join(lines)
+
+
+def watermelon_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🍉 <b>{branded_title('АРБУЗНАЯ ФРУТТЕЛА')}</b>",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"🏅 <b>Победителей:</b> {giveaway.winners_count}",
+        f"👥 <b>Участников:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "🍬 <b>Механика:</b> победители выбираются по случайным фруктовым слотам.",
+        "📋 <b>Фруктовые слоты:</b>",
+        *watermelon_participants_block(giveaway, "Пока пусто, первый слот может стать твоим."),
+    ]
+    return "\n".join(lines)
+
+
+def cosmo_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🌌 <b>{branded_title('КОСМО РУЛЕТКА')}</b>",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"🏅 <b>Победителей:</b> {giveaway.winners_count}",
+        f"👨‍🚀 <b>Экипаж:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "🌠 <b>Механика:</b> победители выбираются по случайным космо-символам.",
+        "🚀 <b>Космические слоты:</b>",
+        *cosmo_participants_block(giveaway, "Пока корабль пустой, можешь занять первый слот."),
+    ]
+    return "\n".join(lines)
+
+
+def cube_survivor_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🎲 <b>{branded_title('КУБИК НА ВЫБЫВАНИЕ')}</b>",
+        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"👥 <b>Игроков:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "🔥 <b>Механика:</b> кубик поэтапно выбивает игроков до одного победителя.",
+        "📋 <b>Список игроков:</b>",
+        *participants_block(giveaway, "Пока пусто, можешь быть первым."),
+    ]
+    return "\n".join(lines)
+
+
 def classic_text(giveaway: Giveaway) -> str:
+    conditions = subscription_lines(giveaway.meta.get("subscription_targets") or [])
     lines = [
         f"🎊 <b>{branded_title('НОВЫЙ РОЗЫГРЫШ')}</b>",
-        "",
         f"🏆 <b>Приз:</b> {escape(giveaway.prize)}",
         f"🥇 <b>Количество победителей:</b> {giveaway.winners_count}",
-        "",
-        *promo_lines(),
-        "",
-        f"👥 <b>Участников:</b> {len(giveaway.participants)}",
-        "📋 <b>Список участников:</b>",
-        *participants_block(giveaway, "Пока пусто, можешь быть первым."),
+        *(
+            [
+                "🔔 <b>Условия:</b>",
+                *conditions,
+            ]
+            if conditions
+            else []
+        ),
     ]
     return "\n".join(lines)
 
@@ -619,10 +886,7 @@ def classic_text(giveaway: Giveaway) -> str:
 def duel_text(giveaway: Giveaway) -> str:
     lines = [
         f"⚔️ <b>{branded_title('ДУЭЛЬ НА ДВОИХ')}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
-        *promo_lines(),
-        "",
         f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
         *participants_block(giveaway, "Пока никто не вошёл."),
     ]
@@ -632,10 +896,7 @@ def duel_text(giveaway: Giveaway) -> str:
 def darts_text(giveaway: Giveaway) -> str:
     lines = [
         f"🎯 <b>{branded_title('ДАРТС-БИТВА НА ДВОИХ')}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
-        *promo_lines(),
-        "",
         f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
         *participants_block(giveaway, "Пока никто не вошёл."),
     ]
@@ -645,10 +906,7 @@ def darts_text(giveaway: Giveaway) -> str:
 def bowling_text(giveaway: Giveaway) -> str:
     lines = [
         f"🎳 <b>{branded_title('БОУЛИНГ-БИТВА НА ДВОИХ')}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
-        *promo_lines(),
-        "",
         f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
         *participants_block(giveaway, "Пока никто не вошёл."),
     ]
@@ -658,10 +916,7 @@ def bowling_text(giveaway: Giveaway) -> str:
 def football_text(giveaway: Giveaway) -> str:
     lines = [
         f"⚽ <b>{branded_title('ФУТБОЛ-БИТВА НА ДВОИХ')}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
-        *promo_lines(),
-        "",
         f"👤 <b>Игроки:</b> {len(giveaway.participants)}/2",
         *participants_block(giveaway, "Пока никто не вошёл."),
     ]
@@ -672,12 +927,9 @@ def result_text(title: str, prize: str, winners: List[dict]) -> str:
     winner_lines = [f"• {user_label(winner)}" for winner in winners] or ["• Участников не было"]
     lines = [
         f"✅ <b>{escape(title)}</b>",
-        "",
         f"🎁 <b>Приз:</b> {escape(prize)}",
-        "",
         "🏅 <b>Победители:</b>",
         *winner_lines,
-        "",
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -685,17 +937,86 @@ def result_text(title: str, prize: str, winners: List[dict]) -> str:
 
 def mini_money2_result_text(completed: CompletedGiveaway, winner_number: int) -> str:
     winner = completed.winners[0]
+    claim_line = (
+        f"🎁 <b>Чек закреплён за:</b> @{escape(winner['username'])}"
+        if winner.get("username")
+        else "🎁 <b>Чек закреплён за победителем в Telegram.</b>"
+    )
     lines = [
-        f"🤑 <b>{branded_title('MINI BABKI 2')}</b>",
-        "",
+        f"🤑 <b>{branded_title('Халява')}</b>",
         f"💵 <b>Приз:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
         f"🎲 <b>Выпал номер:</b> {winner_number}",
-        "",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
         f"🔢 <b>Номер победителя в списке:</b> {winner_number}",
-        "💼 <b>Приз зачислен на баланс победителя.</b>",
-        "🎁 <b>Вывод:</b> через профиль победителя в боте.",
-        "",
+        claim_line,
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def darts_colors_result_text(completed: CompletedGiveaway) -> str:
+    winner = completed.winners[0]
+    team_key = str(completed.meta.get("winning_team") or "red")
+    team_label = DART_COLOR_TEAM_LABELS.get(team_key, team_key)
+    lines = [
+        f"🎯 <b>{branded_title('ДАРТС КОМАНДЫ')}</b>",
+        f"💵 <b>Приз:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
+        f"🏹 <b>Дартс:</b> {escape(str(completed.meta.get('dart_roll') or '?'))} — {escape(team_label)}",
+        f"🎲 <b>Кубик:</b> {escape(str(completed.meta.get('final_roll') or '?'))}",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"🔢 <b>Финальные числа:</b> {escape(str(completed.meta.get('winner_numbers_text') or '?'))}",
+        f"🎁 <b>Чек привязан:</b> {'да' if completed.meta.get('claim_check_id') else 'ожидает'}",
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def watermelon_result_text(completed: CompletedGiveaway) -> str:
+    winning_emojis = completed.meta.get("winning_emojis") or []
+    winner_lines = [
+        f"• {watermelon_slot_for_user(completed.participants, winner)} {user_label(winner)}"
+        for winner in completed.winners
+    ] or ["• Победителей нет"]
+    lines = [
+        f"🍉 <b>{branded_title('АРБУЗНАЯ ФРУТТЕЛА')}</b>",
+        f"🎁 <b>Приз:</b> {escape(completed.prize)}",
+        f"👥 <b>Участников было:</b> {len(completed.participants)}",
+        f"🍬 <b>Счастливые фруттелки:</b> {' '.join(escape(str(item)) for item in winning_emojis) or 'не определены'}",
+        "🏆 <b>Победители:</b>",
+        *winner_lines,
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def cosmo_result_text(completed: CompletedGiveaway) -> str:
+    winning_emojis = completed.meta.get("winning_emojis") or []
+    winner_lines = [
+        f"• {cosmo_slot_for_user(completed.participants, winner)} {user_label(winner)}"
+        for winner in completed.winners
+    ] or ["• Победителей нет"]
+    lines = [
+        f"🌌 <b>{branded_title('КОСМО РУЛЕТКА')}</b>",
+        f"🎁 <b>Приз:</b> {escape(completed.prize)}",
+        f"👨‍🚀 <b>Экипаж собран:</b> {len(completed.participants)}",
+        f"🌠 <b>Счастливые сигналы:</b> {' '.join(escape(str(item)) for item in winning_emojis) or 'не определены'}",
+        "🏆 <b>Победители полёта:</b>",
+        *winner_lines,
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def cube_survivor_result_text(completed: CompletedGiveaway) -> str:
+    winner = completed.winners[0]
+    lines = [
+        f"🎲 <b>{branded_title('КУБИК НА ВЫБЫВАНИЕ')}</b>",
+        f"🎁 <b>Приз:</b> {escape(completed.prize)}",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"🎯 <b>Финальный бросок:</b> {escape(str(completed.meta.get('final_roll') or '?'))}",
+        f"🔢 <b>Финальные числа победителя:</b> {escape(str(completed.meta.get('winner_numbers_text') or '?'))}",
+        "📜 <b>Ход игры:</b>",
+        *[f"• {escape(str(line))}" for line in completed.meta.get("history_lines", [])[:12]],
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -839,8 +1160,12 @@ def football_result_text(giveaway: Giveaway, first: dict, second: dict, first_sc
 def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     labels = {
         "mini_money2": "🤑 Участвовать",
+        "darts_colors": "🎯 Войти в команды",
+        "cube_survivor": "🎲 Войти в игру",
+        "watermelon": "🍉 Войти во фруттелу",
+        "cosmo": "🌌 Войти в космо",
         "mini": "🎉 Участвовать",
-        "classic": "🎟 Войти в розыгрыш",
+        "classic": "❤️",
         "duel": "⚔️ Войти в дуэль",
         "darts": "🎯 Войти в дартс",
         "bowling": "🎳 Войти в боулинг",
@@ -848,6 +1173,10 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     }
     closed_labels = {
         "mini_money2": "🔒 Розыгрыш завершён",
+        "darts_colors": "🔒 Игра завершена",
+        "cube_survivor": "🔒 Игра завершена",
+        "watermelon": "🔒 Фруттела завершена",
+        "cosmo": "🔒 Полёт завершён",
         "mini": "🔒 Набор закрыт",
         "classic": "🔒 Розыгрыш завершён",
         "duel": "🔒 Дуэль завершена",
@@ -864,11 +1193,23 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
     )
 
 
-def mini_money2_claim_keyboard(check_url: Optional[str] = None) -> InlineKeyboardMarkup:
+def giveaway_keyboard(giveaway: Giveaway, active: bool = True) -> InlineKeyboardMarkup:
+    base_rows = [list(row) for row in public_keyboard(giveaway.kind, active=active).inline_keyboard]
+    if active and giveaway.kind == "classic":
+        subscription_targets = giveaway.meta.get("subscription_targets") or []
+        for target in subscription_targets[:6]:
+            url = target.get("url")
+            label = str(target.get("label") or target.get("chat_id") or "Подписка")
+            if url:
+                base_rows.append([InlineKeyboardButton(text=f"🔔 {label}", url=str(url))])
+    return InlineKeyboardMarkup(inline_keyboard=base_rows)
+
+
+def mini_money2_claim_keyboard(check_url: Optional[str] = None, kind: str = "mini_money2") -> InlineKeyboardMarkup:
     button = (
         InlineKeyboardButton(text="🎁 Забрать приз", url=check_url)
         if check_url
-        else InlineKeyboardButton(text="🎁 Забрать приз", callback_data="claim:mini_money2")
+        else InlineKeyboardButton(text="🎁 Забрать приз", callback_data=f"claim:{kind}")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[[button]]
@@ -897,6 +1238,10 @@ def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
 def admin_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
+        [InlineKeyboardButton(text="🎯 Дартс команды", callback_data="create:darts_colors")],
+        [InlineKeyboardButton(text="🎲 Кубик на выбывание", callback_data="create:cube_survivor")],
+        [InlineKeyboardButton(text="🍉 Арбузная фруттела", callback_data="create:watermelon")],
+        [InlineKeyboardButton(text="🌌 Космо рулетка", callback_data="create:cosmo")],
         [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
         [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
         [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
@@ -934,7 +1279,7 @@ def remove_admin_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -991,6 +1336,14 @@ def crypto_checks_keyboard(checks: List[dict], confirm_delete_all: bool = False)
 def current_text(giveaway: Giveaway) -> str:
     if giveaway.kind == "mini_money2":
         return mini_money2_text(giveaway)
+    if giveaway.kind == "darts_colors":
+        return darts_colors_text(giveaway)
+    if giveaway.kind == "cube_survivor":
+        return cube_survivor_text(giveaway)
+    if giveaway.kind == "watermelon":
+        return watermelon_text(giveaway)
+    if giveaway.kind == "cosmo":
+        return cosmo_text(giveaway)
     if giveaway.kind == "mini":
         return mini_text(giveaway)
     if giveaway.kind == "classic":
@@ -1008,7 +1361,7 @@ async def publish_giveaway(giveaway: Giveaway) -> None:
     message = await bot.send_message(
         chat_id=CHANNEL_ID,
         text=current_text(giveaway),
-        reply_markup=public_keyboard(giveaway.kind, active=True),
+        reply_markup=giveaway_keyboard(giveaway, active=True),
         disable_web_page_preview=True,
     )
     giveaway.message_id = message.message_id
@@ -1023,9 +1376,24 @@ async def refresh_giveaway(giveaway: Giveaway, active: bool = True) -> None:
         chat_id=CHANNEL_ID,
         message_id=giveaway.message_id,
         text=current_text(giveaway),
-        reply_markup=public_keyboard(giveaway.kind, active=active),
+        reply_markup=giveaway_keyboard(giveaway, active=active),
         disable_web_page_preview=True,
     )
+
+
+async def missing_subscription_targets(user_id: int, giveaway: Giveaway) -> List[dict]:
+    missing: List[dict] = []
+    for target in giveaway.meta.get("subscription_targets") or []:
+        chat_id = target.get("chat_id")
+        try:
+            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            status = str(getattr(member, "status", "")).lower()
+            if status in {"left", "kicked"}:
+                missing.append(target)
+        except Exception:
+            logging.exception("Could not verify subscription for %s in %s", user_id, chat_id)
+            missing.append(target)
+    return missing
 
 
 async def delete_giveaway(kind: str) -> str:
@@ -1178,15 +1546,15 @@ async def send_mini_money2_check_to_winner(completed: CompletedGiveaway) -> None
 async def reset_completed_check_state(completed: CompletedGiveaway) -> None:
     completed.meta.pop("claim_check_url", None)
     completed.meta.pop("claim_check_id", None)
-    if completed.kind == "mini_money2" and completed.message_id is not None:
+    if completed.kind in {"mini_money2", "darts_colors"} and completed.message_id is not None:
         try:
             await bot.edit_message_reply_markup(
                 chat_id=CHANNEL_ID,
                 message_id=completed.message_id,
-                reply_markup=public_keyboard("mini_money2", active=False),
+                reply_markup=public_keyboard(completed.kind, active=False),
             )
         except Exception:
-            logging.exception("Could not reset Mini Babki 2 claim button")
+            logging.exception("Could not reset claim button for %s", completed.kind)
 
 
 async def get_active_check_url(completed: CompletedGiveaway) -> Optional[str]:
@@ -1223,6 +1591,10 @@ async def ensure_mini_money2_check(completed: CompletedGiveaway) -> str:
     return check["url"]
 
 
+async def ensure_crypto_giveaway_check(completed: CompletedGiveaway) -> str:
+    return await ensure_mini_money2_check(completed)
+
+
 async def finish_mini_money2(giveaway: Giveaway) -> str:
     giveaway.finished = True
     winner, winner_number, dice_message_ids = await roll_slot_winner(
@@ -1241,11 +1613,18 @@ async def finish_mini_money2(giveaway: Giveaway) -> str:
         meta=dict(giveaway.meta),
     )
 
+    try:
+        check_url = await ensure_mini_money2_check(completed)
+    except Exception as exc:
+        logging.exception("Could not create Mini Babki 2 winner check")
+        await notify_admins(f"Mini Babki 2: не удалось создать чек победителю: {escape(str(exc))}")
+        return f"Победитель Mini Babki 2: {user_label(winner)}"
+
     await bot.edit_message_text(
         chat_id=CHANNEL_ID,
         message_id=giveaway.message_id,
         text=mini_money2_result_text(completed, winner_number),
-        reply_markup=public_keyboard("mini_money2", active=False),
+        reply_markup=mini_money2_claim_keyboard(check_url),
         disable_web_page_preview=True,
     )
     completed_giveaways["mini_money2"] = completed
@@ -1253,54 +1632,116 @@ async def finish_mini_money2(giveaway: Giveaway) -> str:
     schedule_message_cleanup(CHANNEL_ID, dice_message_ids)
 
     try:
-        profile = credit_profile_balance(winner, str(completed.meta["prize_amount_usd"]))
-    except Exception as exc:
-        logging.exception("Could not credit Mini Babki 2 balance")
-        await notify_admins(f"Mini Babki 2: не удалось зачислить баланс победителю: {escape(str(exc))}")
-        return f"Победитель Mini Babki 2: {user_label(winner)}"
-
-    auto_check_url: Optional[str] = None
-    try:
-        auto_check_url = await ensure_profile_withdraw_check(profile)
-    except Exception as exc:
-        logging.exception("Could not auto-withdraw Mini Babki 2 balance")
-        await notify_admins(
-            f"Mini Babki 2: баланс зачислен, но автовывод чеком не создался: {escape(str(exc))}"
-        )
-
-    try:
         lines = [
             "🎉 <b>Ты выиграл Mini Babki 2</b>",
             "",
-            f"💵 <b>На баланс зачислено:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+            f"💵 <b>Сумма чека:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+            "🎁 Забрать приз можно кнопкой в итоговом посте или по кнопке ниже.",
         ]
-        if auto_check_url:
-            lines.extend(
-                [
-                    "✅ <b>Автовывод создан.</b>",
-                    f"💸 <b>Сумма чека:</b> ${escape(str(profile.get('pending_check_amount_usd', '0.00')))}",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    f"💰 <b>Доступно в профиле:</b> ${profile['balance_usd']}",
-                    "Открой профиль в боте и выведи баланс вручную кнопкой ниже.",
-                ]
-            )
         await bot.send_message(
             winner["id"],
             "\n".join(lines),
-            reply_markup=profile_keyboard(profile),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+            ),
             disable_web_page_preview=True,
         )
     except Exception as exc:
-        logging.exception("Could not notify winner about Mini Babki 2 payout")
+        logging.exception("Could not notify winner about Mini Babki 2 check")
         await notify_admins(
-            f"Mini Babki 2: баланс зачислен, но победителю не отправилось сообщение: {escape(str(exc))}"
+            f"Mini Babki 2: чек создан, но победителю не отправилось сообщение: {escape(str(exc))}"
         )
 
     return f"Победитель Mini Babki 2: {user_label(winner)}"
+
+
+async def finish_darts_colors(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    dart_intro = await bot.send_message(
+        CHANNEL_ID,
+        "🎯 Кидаем дартс. Нечётный результат играет за красную команду, чётный за белую.",
+    )
+    dart_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎯")
+    dart_roll = dart_message.dice.value
+    winning_team = darts_color_team_key_from_roll(dart_roll)
+    winning_team_label = DART_COLOR_TEAM_LABELS[winning_team]
+    team_members = giveaway.participants[:3] if winning_team == "red" else giveaway.participants[3:6]
+    number_sets = [[1, 2], [3, 4], [5, 6]]
+    team_numbers_message = await bot.send_message(
+        CHANNEL_ID,
+        "\n".join(
+            [
+                f"{'🔴' if winning_team == 'red' else '⚪'} Победила {winning_team_label.lower()}.",
+                "🎲 Делим финальные номера:",
+                *cube_numbers_block(team_members, number_sets),
+            ]
+        ),
+    )
+    final_dice = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    final_roll = final_dice.dice.value
+    winner_index = next(index for index, numbers in enumerate(number_sets) if final_roll in numbers)
+    winner = team_members[winner_index]
+
+    completed = CompletedGiveaway(
+        kind="darts_colors",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+        meta={
+            **dict(giveaway.meta),
+            "winning_team": winning_team,
+            "dart_roll": dart_roll,
+            "final_roll": final_roll,
+            "winner_numbers_text": ", ".join(str(number) for number in number_sets[winner_index]),
+        },
+    )
+
+    try:
+        check_url = await ensure_crypto_giveaway_check(completed)
+    except Exception as exc:
+        logging.exception("Could not create Darts Colors winner check")
+        await notify_admins(f"Дартс команды: не удалось создать чек победителю: {escape(str(exc))}")
+        return f"Победитель Дартс команды: {user_label(winner)}"
+
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=darts_colors_result_text(completed),
+        reply_markup=mini_money2_claim_keyboard(check_url, kind="darts_colors"),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["darts_colors"] = completed
+    active_giveaways.pop("darts_colors", None)
+    schedule_message_cleanup(
+        CHANNEL_ID,
+        [dart_intro.message_id, dart_message.message_id, team_numbers_message.message_id, final_dice.message_id],
+    )
+
+    try:
+        await bot.send_message(
+            winner["id"],
+            "\n".join(
+                [
+                    "🎉 <b>Ты выиграл Дартс команды</b>",
+                    "",
+                    f"💵 <b>Сумма чека:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+                    "🎁 Забрать приз можно кнопкой в итоговом посте или по кнопке ниже.",
+                ]
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+            ),
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        logging.exception("Could not notify winner about Darts Colors check")
+        await notify_admins(
+            f"Дартс команды: чек создан, но победителю не отправилось сообщение: {escape(str(exc))}"
+        )
+
+    return f"Победитель Дартс команды: {user_label(winner)}"
 
 
 async def finish_classic(giveaway: Giveaway) -> str:
@@ -1324,6 +1765,155 @@ async def finish_classic(giveaway: Giveaway) -> str:
     )
     active_giveaways.pop("classic", None)
     return "Розыгрыш завершён."
+
+
+async def finish_watermelon(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    winners_count = min(giveaway.winners_count, len(giveaway.participants))
+    slot_pairs = [
+        (user, watermelon_slot_emoji(index))
+        for index, user in enumerate(giveaway.participants)
+    ]
+    suspense_message = await bot.send_message(
+        CHANNEL_ID,
+        "🍉 Фруттелки перемешиваются... Сейчас выпадут счастливые эмодзи.",
+    )
+    await asyncio.sleep(1.4)
+    winning_pairs = random.sample(slot_pairs, winners_count)
+    winners = [user for user, _ in winning_pairs]
+    winning_emojis = [emoji for _, emoji in winning_pairs]
+    completed = CompletedGiveaway(
+        kind="watermelon",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=list(winners),
+        winners_count=winners_count,
+        message_id=giveaway.message_id,
+        meta={"winning_emojis": winning_emojis},
+    )
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=watermelon_result_text(completed),
+        reply_markup=public_keyboard("watermelon", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["watermelon"] = completed
+    active_giveaways.pop("watermelon", None)
+    schedule_message_cleanup(CHANNEL_ID, [suspense_message.message_id])
+    winners_line = ", ".join(user_label(user) for user in winners)
+    return f"Арбузная фруттела завершена. Победители: {winners_line}"
+
+
+async def finish_cosmo(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    winners_count = min(giveaway.winners_count, len(giveaway.participants))
+    slot_pairs = [
+        (user, cosmo_slot_emoji(index))
+        for index, user in enumerate(giveaway.participants)
+    ]
+    suspense_message = await bot.send_message(
+        CHANNEL_ID,
+        "🌌 Космическая рулетка закручивается... Ловим счастливые сигналы из галактики.",
+    )
+    await asyncio.sleep(1.4)
+    winning_pairs = random.sample(slot_pairs, winners_count)
+    winners = [user for user, _ in winning_pairs]
+    winning_emojis = [emoji for _, emoji in winning_pairs]
+    completed = CompletedGiveaway(
+        kind="cosmo",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=list(winners),
+        winners_count=winners_count,
+        message_id=giveaway.message_id,
+        meta={"winning_emojis": winning_emojis},
+    )
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=cosmo_result_text(completed),
+        reply_markup=public_keyboard("cosmo", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["cosmo"] = completed
+    active_giveaways.pop("cosmo", None)
+    schedule_message_cleanup(CHANNEL_ID, [suspense_message.message_id])
+    winners_line = ", ".join(user_label(user) for user in winners)
+    return f"Космо рулетка завершена. Победители: {winners_line}"
+
+
+async def finish_cube_survivor(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    survivors = list(giveaway.participants)
+    history_lines: List[str] = []
+    temp_message_ids: List[int] = []
+
+    intro_message = await bot.send_message(
+        CHANNEL_ID,
+        "🎲 Кубик на выбывание стартует. Выбиваем игроков по их номеру, пока не останется победитель.",
+    )
+    temp_message_ids.append(intro_message.message_id)
+
+    while len(survivors) > 3:
+        dice_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+        temp_message_ids.append(dice_message.message_id)
+        rolled = dice_message.dice.value
+        eliminated = survivors.pop(rolled - 1)
+        history_lines.append(f"Выпало {rolled} — выбывает {user_label(eliminated)}")
+
+    trio_numbers = [[1, 2], [3, 4], [5, 6]]
+    trio_message = await bot.send_message(
+        CHANNEL_ID,
+        "3️⃣ Осталась тройка. Раздаю пары чисел:\n" + "\n".join(cube_numbers_block(survivors, trio_numbers)),
+    )
+    temp_message_ids.append(trio_message.message_id)
+
+    dice_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    temp_message_ids.append(dice_message.message_id)
+    rolled = dice_message.dice.value
+    eliminated_index = next(index for index, assigned in enumerate(trio_numbers) if rolled in assigned)
+    eliminated = survivors.pop(eliminated_index)
+    history_lines.append(f"На этапе тройки выпало {rolled} — выбывает {user_label(eliminated)}")
+
+    final_numbers = [[1, 2, 3], [4, 5, 6]]
+    final_setup_message = await bot.send_message(
+        CHANNEL_ID,
+        "2️⃣ Финал. Раздаю финальные числа:\n" + "\n".join(cube_numbers_block(survivors, final_numbers)),
+    )
+    temp_message_ids.append(final_setup_message.message_id)
+
+    final_dice_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    temp_message_ids.append(final_dice_message.message_id)
+    final_roll = final_dice_message.dice.value
+    winner_index = next(index for index, assigned in enumerate(final_numbers) if final_roll in assigned)
+    winner = survivors[winner_index]
+    history_lines.append(f"Финальный бросок {final_roll} — побеждает {user_label(winner)}")
+
+    completed = CompletedGiveaway(
+        kind="cube_survivor",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+        meta={
+            "final_roll": final_roll,
+            "winner_numbers_text": ", ".join(str(number) for number in final_numbers[winner_index]),
+            "history_lines": history_lines,
+        },
+    )
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=cube_survivor_result_text(completed),
+        reply_markup=public_keyboard("cube_survivor", active=False),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["cube_survivor"] = completed
+    active_giveaways.pop("cube_survivor", None)
+    schedule_message_cleanup(CHANNEL_ID, temp_message_ids)
+    return f"Кубик на выбывание завершён. Победитель: {user_label(winner)}"
 
 
 async def finish_duel(giveaway: Giveaway) -> str:
@@ -1491,7 +2081,14 @@ def participants_text(kind: str) -> str:
 
     lines = [f"👥 <b>Участники: {KIND_TITLES[kind]}</b>", ""]
     if giveaway.participants:
-        lines.extend(f"{index}. {user_label(user)}" for index, user in enumerate(giveaway.participants, start=1))
+        if kind == "watermelon":
+            lines.extend(watermelon_participants_block(giveaway, "Пока участников нет."))
+        elif kind == "cosmo":
+            lines.extend(cosmo_participants_block(giveaway, "Пока участников нет."))
+        elif kind == "darts_colors":
+            lines.extend(darts_color_participants_block(giveaway, "Пока участников нет."))
+        else:
+            lines.extend(f"{index}. {user_label(user)}" for index, user in enumerate(giveaway.participants, start=1))
     else:
         lines.append("Пока участников нет.")
     return "\n".join(lines)
@@ -1535,6 +2132,45 @@ async def reroll_giveaway(kind: str) -> str:
                 meta=dict(completed.meta),
             )
             return await finish_mini_money2(giveaway)
+        elif kind == "darts_colors":
+            giveaway = Giveaway(
+                kind="darts_colors",
+                prize=completed.prize,
+                max_players=6,
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+                meta=dict(completed.meta),
+            )
+            return await finish_darts_colors(giveaway)
+        elif kind == "watermelon":
+            giveaway = Giveaway(
+                kind="watermelon",
+                prize=completed.prize,
+                winners_count=completed.winners_count,
+                max_players=MAX_WATERMELON_PLAYERS,
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+            )
+            return await finish_watermelon(giveaway)
+        elif kind == "cosmo":
+            giveaway = Giveaway(
+                kind="cosmo",
+                prize=completed.prize,
+                winners_count=completed.winners_count,
+                max_players=MAX_COSMO_PLAYERS,
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+            )
+            return await finish_cosmo(giveaway)
+        elif kind == "cube_survivor":
+            giveaway = Giveaway(
+                kind="cube_survivor",
+                prize=completed.prize,
+                max_players=MAX_CUBE_SURVIVOR_PLAYERS,
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+            )
+            return await finish_cube_survivor(giveaway)
         else:
             title = "Рерол розыгрыша"
             text = result_text(title, completed.prize, new_winners)
@@ -1566,6 +2202,16 @@ async def finish_giveaway_by_kind(kind: str) -> str:
         return await finish_mini(giveaway)
     if kind == "mini_money2":
         return await finish_mini_money2(giveaway)
+    if kind == "darts_colors":
+        if len(giveaway.participants) < 6:
+            return "Для Дартс команды нужно 6 игроков."
+        return await finish_darts_colors(giveaway)
+    if kind == "watermelon":
+        return await finish_watermelon(giveaway)
+    if kind == "cosmo":
+        return await finish_cosmo(giveaway)
+    if kind == "cube_survivor":
+        return await finish_cube_survivor(giveaway)
     if kind == "classic":
         return await finish_classic(giveaway)
     if kind == "darts":
@@ -1587,7 +2233,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -1612,7 +2258,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini_money2", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -1722,6 +2368,10 @@ def start_keyboard(user_id: int) -> InlineKeyboardMarkup:
 def admin_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
+        [InlineKeyboardButton(text="🎯 Дартс команды", callback_data="create:darts_colors")],
+        [InlineKeyboardButton(text="🎲 Кубик на выбывание", callback_data="create:cube_survivor")],
+        [InlineKeyboardButton(text="🍉 Арбузная фруттела", callback_data="create:watermelon")],
+        [InlineKeyboardButton(text="🌌 Космо рулетка", callback_data="create:cosmo")],
         [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
         [InlineKeyboardButton(text="🎊 Создать розыгрыш", callback_data="create:classic")],
         [InlineKeyboardButton(text="⚔️ Создать дуэль", callback_data="create:duel")],
@@ -1768,20 +2418,98 @@ async def send_profile_overview(message: Message, user_data: Any) -> None:
     await message.answer(profile_text(profile), reply_markup=profile_keyboard(profile), disable_web_page_preview=True)
 
 
+def crypto_invoice_id_value(invoice: dict) -> Optional[int]:
+    raw_id = invoice.get("invoice_id") or invoice.get("id")
+    try:
+        return int(raw_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def mini_money2_invoice_matches_pending(invoice: dict, invoice_id: int, pending: dict) -> bool:
+    if crypto_invoice_id_value(invoice) == invoice_id:
+        return True
+
+    pending_hash = str(pending.get("crypto_invoice_hash") or "").strip()
+    invoice_hash = str(invoice.get("hash") or "").strip()
+    if pending_hash and invoice_hash and pending_hash == invoice_hash:
+        return True
+
+    pending_payload = str(pending.get("crypto_invoice_payload") or "").strip()
+    invoice_payload = str(invoice.get("payload") or "").strip()
+    if pending_payload and invoice_payload and pending_payload == invoice_payload:
+        return True
+
+    pending_url = str(pending.get("crypto_invoice_url") or "").strip()
+    invoice_url = str(crypto_invoice_url(invoice) or "").strip()
+    if pending_url and invoice_url and pending_url == invoice_url:
+        return True
+
+    pending_amount = str(pending.get("payment_amount_usd") or "").strip()
+    invoice_amount = str(invoice.get("amount") or "").strip()
+    pending_description = str(pending.get("crypto_invoice_description") or "").strip()
+    invoice_description = str(invoice.get("description") or "").strip()
+    return bool(
+        pending_amount
+        and pending_description
+        and pending_amount == invoice_amount
+        and pending_description == invoice_description
+    )
+
+
+def sync_pending_mini_money2_invoice_meta(pending: dict, invoice: dict) -> None:
+    changed = False
+    updates = {
+        "crypto_invoice_id": crypto_invoice_id_value(invoice) or pending.get("crypto_invoice_id"),
+        "crypto_invoice_url": crypto_invoice_url(invoice) or pending.get("crypto_invoice_url"),
+        "crypto_invoice_hash": invoice.get("hash") or pending.get("crypto_invoice_hash"),
+        "crypto_invoice_payload": invoice.get("payload") or pending.get("crypto_invoice_payload"),
+        "crypto_invoice_description": invoice.get("description") or pending.get("crypto_invoice_description"),
+        "payment_amount_usd": str(invoice.get("amount") or pending.get("payment_amount_usd")),
+    }
+    for key, value in updates.items():
+        if value is None:
+            continue
+        if pending.get(key) != value:
+            pending[key] = value
+            changed = True
+    if changed:
+        save_pending_mini_money2_invoices()
+
+
+async def find_pending_mini_money2_invoice(invoice_id: int, pending: dict) -> Optional[dict]:
+    direct = await get_crypto_invoices(invoice_ids=[invoice_id], count=1)
+    for invoice in direct:
+        if mini_money2_invoice_matches_pending(invoice, invoice_id, pending):
+            return invoice
+
+    for status in (None, "active", "paid", "expired"):
+        if status is None:
+            invoices = await get_crypto_invoices(count=100)
+        else:
+            invoices = await get_crypto_invoices(status=status, count=100)
+        for invoice in invoices:
+            if mini_money2_invoice_matches_pending(invoice, invoice_id, pending):
+                return invoice
+
+    return None
+
+
 async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
     pending = pending_mini_money2_invoices.get(invoice_id)
     if not pending:
         return "Счёт уже не ожидает оплаты."
 
-    invoices = await get_crypto_invoices(invoice_ids=[invoice_id], count=1)
-    if not invoices:
-        return "Счёт не найден в Crypto Pay."
+    invoice = await find_pending_mini_money2_invoice(invoice_id, pending)
+    if not invoice:
+        return "Счёт пока не найден через API Crypto Pay. Автопроверка продолжится, попробуй ещё раз через 15-30 секунд."
 
-    invoice = invoices[0]
+    sync_pending_mini_money2_invoice_meta(pending, invoice)
     status = str(invoice.get("status", "")).lower()
     if status != "paid":
         if status in {"expired", "cancelled", "deleted"}:
             pending_mini_money2_invoices.pop(invoice_id, None)
+            save_pending_mini_money2_invoices()
             return f"Счёт больше не активен. Статус: {status}."
         return f"Счёт ещё не оплачен. Текущий статус: {status or 'unknown'}."
 
@@ -1798,10 +2526,13 @@ async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
             "payment_amount_usd": pending["payment_amount_usd"],
             "crypto_invoice_url": pending["crypto_invoice_url"],
             "crypto_invoice_id": pending["crypto_invoice_id"],
+            "crypto_invoice_hash": pending.get("crypto_invoice_hash"),
+            "crypto_invoice_payload": pending.get("crypto_invoice_payload"),
         },
     )
     await publish_giveaway(giveaway)
     pending_mini_money2_invoices.pop(invoice_id, None)
+    save_pending_mini_money2_invoices()
     return (
         "Оплата подтверждена. Mini Babki 2 опубликован в канале.\n"
         f"Приз: ${pending['prize_amount_usd']}\n"
@@ -1814,7 +2545,7 @@ async def watch_mini_money2_invoice(invoice_id: int) -> None:
         while invoice_id in pending_mini_money2_invoices:
             await asyncio.sleep(15)
             result = await publish_paid_mini_money2_invoice(invoice_id)
-            if result.startswith("Оплата подтверждена") or "больше не активен" in result or "не найден" in result:
+            if result.startswith("Оплата подтверждена") or "больше не активен" in result:
                 await notify_admins(result)
                 break
     except Exception:
@@ -1949,6 +2680,7 @@ async def mini_money2_invoice_actions(call: CallbackQuery) -> None:
 
     if action == "cancel":
         pending_mini_money2_invoices.pop(invoice_id, None)
+        save_pending_mini_money2_invoices()
         watcher = pending_mini_money2_watchers.pop(invoice_id, None)
         if watcher:
             watcher.cancel()
@@ -2192,6 +2924,10 @@ async def create_handler(call: CallbackQuery) -> None:
     admin_state[call.from_user.id] = {"kind": kind, "step": "prize"}
     prompts = {
         "mini_money2": "Пришли сумму приза в долларах для Mini Babki 2. Например: 25",
+        "darts_colors": "Пришли сумму приза в долларах для Дартс команды. Например: 25",
+        "cube_survivor": "Пришли приз для игры Кубик на выбывание.",
+        "watermelon": "Пришли приз для Арбузной фруттелы.",
+        "cosmo": "Пришли приз для Космо рулетки.",
         "mini": "Пришли приз для мини-розыгрыша.",
         "classic": "Пришли приз для обычного розыгрыша.",
         "duel": "Пришли приз для дуэли.",
@@ -2343,12 +3079,12 @@ async def admin_flow(message: Message) -> None:
             await message.answer("Приз не должен быть пустым.")
             return
 
-        if kind == "mini_money2":
+        if kind in {"mini_money2", "darts_colors"}:
             if kind in active_giveaways:
-                await message.answer("Сначала заверши текущий Mini Babki 2.")
+                await message.answer(f"Сначала заверши текущий {KIND_TITLES[kind]}.")
                 return
             if pending_mini_money2_invoices:
-                await message.answer("Уже есть неоплаченный или ожидающий оплаты счёт для Mini Babki 2.")
+                await message.answer(f"Уже есть неоплаченный или ожидающий оплаты счёт для {KIND_TITLES[kind]}.")
                 return
 
             try:
@@ -2359,9 +3095,9 @@ async def admin_flow(message: Message) -> None:
                 return
 
             try:
-                invoice = await create_crypto_invoice(payment_amount, f"Mini Babki 2 prize fund ${prize_amount}")
+                invoice = await create_crypto_invoice(payment_amount, f"{KIND_TITLES[kind]} prize fund ${prize_amount}", kind=kind)
             except Exception as exc:
-                logging.exception("Could not create Mini Babki 2 invoice")
+                logging.exception("Could not create %s invoice", kind)
                 await message.answer(f"Не удалось создать счёт CryptoBot: {escape(str(exc))}")
                 return
 
@@ -2372,7 +3108,11 @@ async def admin_flow(message: Message) -> None:
                 "payment_amount_usd": payment_amount,
                 "crypto_invoice_url": invoice["url"],
                 "crypto_invoice_id": invoice_id,
+                "crypto_invoice_hash": invoice.get("hash"),
+                "crypto_invoice_payload": invoice.get("payload"),
+                "crypto_invoice_description": invoice.get("description") or f"{KIND_TITLES[kind]} prize fund ${prize_amount}",
             }
+            save_pending_mini_money2_invoices()
             watcher = pending_mini_money2_watchers.get(invoice_id)
             if watcher:
                 watcher.cancel()
@@ -2381,8 +3121,8 @@ async def admin_flow(message: Message) -> None:
             admin_state.pop(message.from_user.id, None)
             await message.answer(
                 "\n".join(
-                    [
-                        "🤑 <b>Счёт для Mini Babki 2 создан</b>",
+                        [
+                        f"🧾 <b>Счёт для {KIND_TITLES[kind]} создан</b>",
                         "",
                         f"💵 <b>Приз розыгрыша:</b> ${prize_amount}",
                         f"💳 <b>К оплате с комиссией +10%:</b> ${payment_amount}",
@@ -2396,9 +3136,10 @@ async def admin_flow(message: Message) -> None:
             return
 
         state["prize"] = text
-        if kind == "classic":
+        if kind in {"classic", "watermelon", "cosmo"}:
             state["step"] = "winners"
-            await message.answer("Сколько победителей нужно выбрать?")
+            limit_hint = "до 20" if kind == "watermelon" else "до 12" if kind == "cosmo" else "от 1 и выше"
+            await message.answer(f"Сколько победителей нужно выбрать? Пришли число {limit_hint}.")
             return
 
         await create_and_publish(message, kind, text, 1)
@@ -2409,7 +3150,46 @@ async def admin_flow(message: Message) -> None:
             await message.answer("Пришли число от 1 и выше.")
             return
 
+        if kind == "watermelon" and int(text) > MAX_WATERMELON_PLAYERS:
+            await message.answer(f"Для Арбузной фруттелы максимум {MAX_WATERMELON_PLAYERS} победителей.")
+            return
+        if kind == "cosmo" and int(text) > MAX_COSMO_PLAYERS:
+            await message.answer(f"Для Космо рулетки максимум {MAX_COSMO_PLAYERS} победителей.")
+            return
+
+        if kind == "classic":
+            state["winners_count"] = int(text)
+            state["step"] = "subscriptions"
+            await message.answer(
+                "Пришли обязательные подписки для участия.\n"
+                "Можно указать через запятую: @channel1, @channel2 или https://t.me/channel\n"
+                "Если условий нет, напиши: нет"
+            )
+            return
+
         await create_and_publish(message, kind, state["prize"], int(text))
+        return
+
+    if kind == "classic" and step == "subscriptions":
+        if text.lower() in {"нет", "no", "-", "0"}:
+            subscription_targets: List[dict] = []
+        else:
+            try:
+                subscription_targets = parse_subscription_targets(text)
+            except ValueError as exc:
+                await message.answer(f"{escape(str(exc))}\nПришли список ещё раз или напиши 'нет'.")
+                return
+            if not subscription_targets:
+                await message.answer("Не увидел ни одного условия. Пришли @username / t.me ссылку или напиши 'нет'.")
+                return
+
+        await create_and_publish(
+            message,
+            kind,
+            state["prize"],
+            int(state["winners_count"]),
+            meta={"subscription_targets": subscription_targets},
+        )
 
 
 async def create_and_publish(message: Message, kind: str, prize: str, winners_count: int, meta: Optional[Dict[str, Any]] = None) -> None:
@@ -2421,23 +3201,23 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind in {"mini", "mini_money2"} else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
+        max_players=MAX_MINI_PLAYERS if kind in {"mini", "mini_money2"} else 6 if kind == "darts_colors" else MAX_CUBE_SURVIVOR_PLAYERS if kind == "cube_survivor" else MAX_WATERMELON_PLAYERS if kind == "watermelon" else MAX_COSMO_PLAYERS if kind == "cosmo" else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
         meta=meta or {},
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
     await message.answer("Пост опубликован в канал.", reply_markup=admin_keyboard())
-    if kind == "mini_money2":
+    if kind in {"mini_money2", "darts_colors"}:
         await message.answer(
             "\n".join(
                 [
-                    "🤑 <b>Mini Babki 2 опубликован</b>",
+                    f"🤑 <b>{KIND_TITLES[kind]} опубликован</b>",
                     "",
                     f"💵 <b>Приз:</b> ${escape(str(giveaway.meta['prize_amount_usd']))}",
                     "💳 <b>Счёт на оплату:</b>",
                     giveaway.meta["crypto_invoice_url"],
                     "",
-                    "🎁 После победы сумма зачислится на баланс пользователя.",
+                    "🎁 После победы приз можно будет забрать через CryptoBot.",
                 ]
             ),
             reply_markup=admin_keyboard(),
@@ -2459,6 +3239,16 @@ async def join_handler(call: CallbackQuery) -> None:
     if any(user["id"] == call.from_user.id for user in giveaway.participants):
         await call.answer("Ты уже участвуешь")
         return
+
+    if kind == "classic":
+        missing_targets = await missing_subscription_targets(call.from_user.id, giveaway)
+        if missing_targets:
+            missing_labels = ", ".join(str(item.get("label") or item.get("chat_id") or "?") for item in missing_targets[:4])
+            await call.answer(
+                f"Сначала подпишись: {missing_labels}",
+                show_alert=True,
+            )
+            return
 
     if kind in {"mini", "mini_money2"}:
         now = asyncio.get_running_loop().time()
@@ -2498,7 +3288,7 @@ async def join_handler(call: CallbackQuery) -> None:
 
         participants_count = len(giveaway.participants)
         should_finish = (
-            kind in {"mini", "mini_money2"} and giveaway.max_players and participants_count >= giveaway.max_players
+            kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor"} and giveaway.max_players and participants_count >= giveaway.max_players
         ) or (kind in {"duel", "darts", "bowling", "football"} and participants_count >= 2)
 
         if should_finish:
@@ -2506,13 +3296,37 @@ async def join_handler(call: CallbackQuery) -> None:
             giveaway_to_finish = giveaway
         else:
             await refresh_giveaway(giveaway, active=True)
-            answer_text = f"Готово. Сейчас участников: {participants_count}"
+            if kind == "watermelon":
+                answer_text = (
+                    f"Готово. Твой фруктовый слот: {watermelon_slot_emoji(participants_count - 1)}. "
+                    f"Сейчас участников: {participants_count}"
+                )
+            elif kind == "cosmo":
+                answer_text = (
+                    f"Готово. Твой космо-слот: {cosmo_slot_emoji(participants_count - 1)}. "
+                    f"Сейчас участников: {participants_count}"
+                )
+            elif kind == "cube_survivor":
+                answer_text = (
+                    f"Готово. Твой номер в игре: {participants_count}. "
+                    f"Кубик начнёт выбивание, когда соберётся {MAX_CUBE_SURVIVOR_PLAYERS} игроков."
+                )
+            elif kind == "darts_colors":
+                team_label = "красная" if participants_count <= 3 else "белая"
+                number_sets = ("1-2", "3-4", "5-6")
+                slot_label = number_sets[(participants_count - 1) % 3]
+                answer_text = (
+                    f"Готово. Ты занял слот {participants_count} и попал в {team_label} команду. "
+                    f"Твои финальные числа: {slot_label}."
+                )
+            else:
+                answer_text = f"Готово. Сейчас участников: {participants_count}"
 
     if not should_finish or not giveaway_to_finish:
         await call.answer(answer_text)
         return
 
-    if kind in {"mini", "mini_money2"}:
+    if kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor"}:
         await asyncio.sleep(0.7)
 
     if kind == "mini":
@@ -2521,6 +3335,18 @@ async def join_handler(call: CallbackQuery) -> None:
     elif kind == "mini_money2":
         result = await finish_mini_money2(giveaway_to_finish)
         answer_text = "Ты успел в Mini Babki 2, победитель уже определён."
+    elif kind == "darts_colors":
+        result = await finish_darts_colors(giveaway_to_finish)
+        answer_text = "Шестой игрок зашёл, Дартс команды уже сыграны."
+    elif kind == "watermelon":
+        result = await finish_watermelon(giveaway_to_finish)
+        answer_text = "Ты успел во фруттелу, победители уже определены."
+    elif kind == "cosmo":
+        result = await finish_cosmo(giveaway_to_finish)
+        answer_text = "Ты успел в космо рулетку, победители уже определены."
+    elif kind == "cube_survivor":
+        result = await finish_cube_survivor(giveaway_to_finish)
+        answer_text = "Шестой игрок зашёл, игра уже завершена."
     elif kind == "duel":
         result = await finish_duel(giveaway_to_finish)
         answer_text = "Второй игрок зашёл, дуэль уже сыграна."
@@ -2538,10 +3364,11 @@ async def join_handler(call: CallbackQuery) -> None:
     await call.answer(answer_text)
 
 
-@dp.callback_query(F.data == "claim:mini_money2")
-async def claim_mini_money2(call: CallbackQuery) -> None:
+@dp.callback_query(F.data.in_({"claim:mini_money2", "claim:darts_colors"}))
+async def claim_crypto_prize(call: CallbackQuery) -> None:
     remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    completed = completed_giveaways.get("mini_money2")
+    kind = call.data.split(":", 1)[1]
+    completed = completed_giveaways.get(kind)
     if not completed or not completed.winners:
         await call.answer("Сейчас нечего забирать", show_alert=True)
         return
@@ -2555,8 +3382,8 @@ async def claim_mini_money2(call: CallbackQuery) -> None:
         profile = ensure_user_profile(call.from_user.id, call.from_user.username, call.from_user.first_name)
         check_url = await ensure_profile_withdraw_check(profile)
     except Exception as exc:
-        logging.exception("Could not withdraw Mini Babki 2 balance")
-        await notify_admins(f"Mini Babki 2: ошибка вывода баланса победителя: {escape(str(exc))}")
+        logging.exception("Could not withdraw %s balance", kind)
+        await notify_admins(f"{KIND_TITLES[kind]}: ошибка вывода баланса победителя: {escape(str(exc))}")
         await call.answer("Не удалось вывести баланс, админы уже получили уведомление", show_alert=True)
         return
 
@@ -2576,21 +3403,34 @@ async def claim_mini_money2(call: CallbackQuery) -> None:
         )
         await call.answer("Чек отправлен тебе в личку", show_alert=True)
     except Exception:
-        logging.exception("Could not send Mini Babki 2 check to DM")
+        logging.exception("Could not send %s check to DM", kind)
         await call.answer("Чек готов. Кнопка в посте уже открывает его напрямую.", show_alert=True)
+
+
+def restart_pending_mini_money2_watchers() -> int:
+    restored = 0
+    for invoice_id in list(pending_mini_money2_invoices):
+        watcher = pending_mini_money2_watchers.get(invoice_id)
+        if watcher and not watcher.done():
+            continue
+        pending_mini_money2_watchers[invoice_id] = asyncio.create_task(watch_mini_money2_invoice(invoice_id))
+        restored += 1
+    return restored
 
 
 async def on_startup() -> None:
     logging.info("Bot started")
+    restored = restart_pending_mini_money2_watchers()
     await bot.send_message(
         ADMIN_ID,
         "Бот запущен.\n\n"
         "Что можно делать:\n"
         "• открыть /start и зайти в админку кнопкой\n"
-        "• создать мини, розыгрыш, дуэль, дартс, боулинг или футбол\n"
+        "• создать мини, Mini Babki 2, Дартс команды, розыгрыш, дуэль, дартс, боулинг или футбол\n"
         "• смотреть участников, завершать, удалять и делать рерол кнопками\n"
         "• выдавать и удалять админку через раздел админов\n"
-        "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR",
+        "• менять бренд одной строкой: BRAND_USERNAME, BRAND_AUTHOR\n"
+        f"• восстановлено ожиданий оплаты Mini Babki 2: {restored}",
     )
 
 
