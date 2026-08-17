@@ -38,8 +38,11 @@ MAX_CUBE_SURVIVOR_PLAYERS = 6
 MAX_DART_COLOR_PLAYERS = 6
 MAX_WATERMELON_PLAYERS = 20
 MAX_COSMO_PLAYERS = 12
+MIN_EMOJI_ARENA_PLAYERS = 6
+MAX_EMOJI_ARENA_PLAYERS = 20
 MINI_JOIN_COOLDOWN_SECONDS = 5
 ROLL_DELETE_DELAY_SECONDS = 12
+EMOJI_ARENA_ROLL_EMOJIS = ["🎯", "🎳", "⚽", "🏀"]
 WATERMELON_EMOJIS = [
     "🍉",
     "🍓",
@@ -80,6 +83,7 @@ KIND_TITLES = {
     "mini_money2": "Mini Babki 2",
     "darts_colors": "Дартс команды",
     "cube_survivor": "Кубик на выбывание",
+    "emoji_arena": "Эмодзи баттл",
     "watermelon": "Арбузная фруттела",
     "cosmo": "Космо рулетка",
     "mini": "Мини-розыгрыш",
@@ -657,6 +661,14 @@ def signature_line() -> str:
     return escape(BRAND_USERNAME)
 
 
+def winners_heading(winners: List[dict]) -> str:
+    return "Победитель" if len(winners) == 1 else "Победители"
+
+
+def winners_line(winners: List[dict]) -> str:
+    return ", ".join(user_label(winner) for winner in winners) if winners else "никто"
+
+
 def branded_title(title: str) -> str:
     return title
 
@@ -865,6 +877,18 @@ def cube_survivor_text(giveaway: Giveaway) -> str:
     return "\n".join(lines)
 
 
+def emoji_arena_text(giveaway: Giveaway) -> str:
+    lines = [
+        f"🎮 <b>{branded_title('ЭМОДЗИ БАТТЛ')}</b>",
+        f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
+        f"👥 <b>Игроков:</b> {len(giveaway.participants)}/{giveaway.max_players}",
+        "🔥 <b>Механика:</b> от 6 до 20 игроков. Каждый получает Telegram-эмодзи бросок, максимальный результат забирает приз.",
+        "📋 <b>Список игроков:</b>",
+        *participants_block(giveaway, "Пока пусто, можешь занять первый слот."),
+    ]
+    return "\n".join(lines)
+
+
 def classic_text(giveaway: Giveaway) -> str:
     conditions = subscription_lines(giveaway.meta.get("subscription_targets") or [])
     lines = [
@@ -924,12 +948,10 @@ def football_text(giveaway: Giveaway) -> str:
 
 
 def result_text(title: str, prize: str, winners: List[dict]) -> str:
-    winner_lines = [f"• {user_label(winner)}" for winner in winners] or ["• Участников не было"]
     lines = [
         f"✅ <b>{escape(title)}</b>",
         f"🎁 <b>Приз:</b> {escape(prize)}",
-        "🏅 <b>Победители:</b>",
-        *winner_lines,
+        f"🏆 <b>{winners_heading(winners)}:</b> {winners_line(winners)}",
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -973,17 +995,11 @@ def darts_colors_result_text(completed: CompletedGiveaway) -> str:
 
 def watermelon_result_text(completed: CompletedGiveaway) -> str:
     winning_emojis = completed.meta.get("winning_emojis") or []
-    winner_lines = [
-        f"• {watermelon_slot_for_user(completed.participants, winner)} {user_label(winner)}"
-        for winner in completed.winners
-    ] or ["• Победителей нет"]
     lines = [
         f"🍉 <b>{branded_title('АРБУЗНАЯ ФРУТТЕЛА')}</b>",
         f"🎁 <b>Приз:</b> {escape(completed.prize)}",
-        f"👥 <b>Участников было:</b> {len(completed.participants)}",
         f"🍬 <b>Счастливые фруттелки:</b> {' '.join(escape(str(item)) for item in winning_emojis) or 'не определены'}",
-        "🏆 <b>Победители:</b>",
-        *winner_lines,
+        f"🏆 <b>{winners_heading(completed.winners)}:</b> {winners_line(completed.winners)}",
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -991,17 +1007,11 @@ def watermelon_result_text(completed: CompletedGiveaway) -> str:
 
 def cosmo_result_text(completed: CompletedGiveaway) -> str:
     winning_emojis = completed.meta.get("winning_emojis") or []
-    winner_lines = [
-        f"• {cosmo_slot_for_user(completed.participants, winner)} {user_label(winner)}"
-        for winner in completed.winners
-    ] or ["• Победителей нет"]
     lines = [
         f"🌌 <b>{branded_title('КОСМО РУЛЕТКА')}</b>",
         f"🎁 <b>Приз:</b> {escape(completed.prize)}",
-        f"👨‍🚀 <b>Экипаж собран:</b> {len(completed.participants)}",
         f"🌠 <b>Счастливые сигналы:</b> {' '.join(escape(str(item)) for item in winning_emojis) or 'не определены'}",
-        "🏆 <b>Победители полёта:</b>",
-        *winner_lines,
+        f"🏆 <b>{winners_heading(completed.winners)}:</b> {winners_line(completed.winners)}",
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -1016,8 +1026,20 @@ def cube_survivor_result_text(completed: CompletedGiveaway) -> str:
         f"🎯 <b>Финальный бросок:</b> {escape(str(completed.meta.get('final_roll') or '?'))}",
         f"🔢 <b>Финальные числа победителя:</b> {escape(str(completed.meta.get('winner_numbers_text') or '?'))}",
         f"🎁 <b>Чек привязан:</b> {'да' if completed.meta.get('claim_check_id') else 'ожидает'}",
-        "📜 <b>Ход игры:</b>",
-        *[f"• {escape(str(line))}" for line in completed.meta.get("history_lines", [])[:12]],
+        f"🔖 {signature_line()}",
+    ]
+    return "\n".join(lines)
+
+
+def emoji_arena_result_text(completed: CompletedGiveaway) -> str:
+    winner = completed.winners[0]
+    lines = [
+        f"🎮 <b>{branded_title('ЭМОДЗИ БАТТЛ')}</b>",
+        f"💵 <b>Приз:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
+        f"🎲 <b>Эмодзи раунда:</b> {escape(str(completed.meta.get('roll_emoji') or '🎯'))}",
+        f"🔥 <b>Победный результат:</b> {escape(str(completed.meta.get('winning_score') or '?'))}",
+        f"🏆 <b>Победитель:</b> {user_label(winner)}",
+        f"🎁 <b>Чек привязан:</b> {'да' if completed.meta.get('claim_check_id') else 'ожидает'}",
         f"🔖 {signature_line()}",
     ]
     return "\n".join(lines)
@@ -1096,11 +1118,8 @@ def duel_result_text(giveaway: Giveaway, first: dict, second: dict, first_roll: 
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         "",
-        f"🎲 {user_label(first)} выбил <b>{first_roll}</b>",
-        f"🎲 {user_label(second)} выбил <b>{second_roll}</b>",
-        "",
+        f"🎲 <b>Финальный счёт:</b> {first_roll}:{second_roll}",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
-        f"💔 <b>Не повезло:</b> {user_label(loser)}",
         "",
         f"🔖 {signature_line()}",
     ]
@@ -1113,11 +1132,8 @@ def darts_result_text(giveaway: Giveaway, first: dict, second: dict, first_score
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         "",
-        f"🏹 {user_label(first)} попал на <b>{first_score}</b>",
-        f"🏹 {user_label(second)} попал на <b>{second_score}</b>",
-        "",
+        f"🏹 <b>Финальный счёт:</b> {first_score}:{second_score}",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
-        f"💨 <b>Чуть не хватило:</b> {user_label(loser)}",
         "",
         f"🔖 {signature_line()}",
     ]
@@ -1130,11 +1146,8 @@ def bowling_result_text(giveaway: Giveaway, first: dict, second: dict, first_sco
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         "",
-        f"🎳 {user_label(first)} выбил <b>{first_score}</b>",
-        f"🎳 {user_label(second)} выбил <b>{second_score}</b>",
-        "",
+        f"🎳 <b>Финальный счёт:</b> {first_score}:{second_score}",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
-        f"💨 <b>Не хватило чуть-чуть:</b> {user_label(loser)}",
         "",
         f"🔖 {signature_line()}",
     ]
@@ -1147,11 +1160,8 @@ def football_result_text(giveaway: Giveaway, first: dict, second: dict, first_sc
         "",
         f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
         "",
-        f"🥅 {user_label(first)} выбил <b>{first_score}</b>",
-        f"🥅 {user_label(second)} выбил <b>{second_score}</b>",
-        "",
+        f"🥅 <b>Финальный счёт:</b> {first_score}:{second_score}",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
-        f"💨 <b>Не хватило чуть-чуть:</b> {user_label(loser)}",
         "",
         f"🔖 {signature_line()}",
     ]
@@ -1163,6 +1173,7 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
         "mini_money2": "🤑 Участвовать",
         "darts_colors": "🎯 Войти в команды",
         "cube_survivor": "🎲 Войти в игру",
+        "emoji_arena": "🎮 Войти в баттл",
         "watermelon": "🍉 Войти во фруттелу",
         "cosmo": "🌌 Войти в космо",
         "mini": "🎉 Участвовать",
@@ -1176,6 +1187,7 @@ def public_keyboard(kind: str, active: bool = True) -> InlineKeyboardMarkup:
         "mini_money2": "🔒 Розыгрыш завершён",
         "darts_colors": "🔒 Игра завершена",
         "cube_survivor": "🔒 Игра завершена",
+        "emoji_arena": "🔒 Баттл завершён",
         "watermelon": "🔒 Фруттела завершена",
         "cosmo": "🔒 Полёт завершён",
         "mini": "🔒 Набор закрыт",
@@ -1239,6 +1251,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
         [InlineKeyboardButton(text="🎯 Дартс команды", callback_data="create:darts_colors")],
         [InlineKeyboardButton(text="🎲 Кубик на выбывание", callback_data="create:cube_survivor")],
+        [InlineKeyboardButton(text="🎮 Эмодзи баттл", callback_data="create:emoji_arena")],
         [InlineKeyboardButton(text="🍉 Арбузная фруттела", callback_data="create:watermelon")],
         [InlineKeyboardButton(text="🌌 Космо рулетка", callback_data="create:cosmo")],
         [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
@@ -1278,7 +1291,7 @@ def remove_admin_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard() -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
-    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "emoji_arena", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         if kind in active_giveaways:
             rows.append([InlineKeyboardButton(text=f"👥 Участники: {KIND_TITLES[kind]}", callback_data=f"admin:members:{kind}")])
             rows.append([InlineKeyboardButton(text=f"🏁 Завершить: {KIND_TITLES[kind]}", callback_data=f"admin:finish:{kind}")])
@@ -1339,6 +1352,8 @@ def current_text(giveaway: Giveaway) -> str:
         return darts_colors_text(giveaway)
     if giveaway.kind == "cube_survivor":
         return cube_survivor_text(giveaway)
+    if giveaway.kind == "emoji_arena":
+        return emoji_arena_text(giveaway)
     if giveaway.kind == "watermelon":
         return watermelon_text(giveaway)
     if giveaway.kind == "cosmo":
@@ -1545,7 +1560,7 @@ async def send_mini_money2_check_to_winner(completed: CompletedGiveaway) -> None
 async def reset_completed_check_state(completed: CompletedGiveaway) -> None:
     completed.meta.pop("claim_check_url", None)
     completed.meta.pop("claim_check_id", None)
-    if completed.kind in {"mini_money2", "darts_colors", "cube_survivor"} and completed.message_id is not None:
+    if completed.kind in {"mini_money2", "darts_colors", "cube_survivor", "emoji_arena"} and completed.message_id is not None:
         try:
             await bot.edit_message_reply_markup(
                 chat_id=CHANNEL_ID,
@@ -1947,18 +1962,90 @@ async def finish_cube_survivor(giveaway: Giveaway) -> str:
     return f"Кубик на выбывание завершён. Победитель: {user_label(winner)}"
 
 
+async def finish_emoji_arena(giveaway: Giveaway) -> str:
+    giveaway.finished = True
+    roll_emoji = random.choice(EMOJI_ARENA_ROLL_EMOJIS)
+    winner, winning_score, dice_message_ids = await roll_contest(
+        giveaway.participants,
+        roll_emoji,
+        f"{roll_emoji} Эмодзи баттл стартует. Максимальный результат забирает приз...",
+    )
+
+    completed = CompletedGiveaway(
+        kind="emoji_arena",
+        prize=giveaway.prize,
+        participants=list(giveaway.participants),
+        winners=[winner],
+        winners_count=1,
+        message_id=giveaway.message_id,
+        meta={
+            **dict(giveaway.meta),
+            "roll_emoji": roll_emoji,
+            "winning_score": winning_score,
+        },
+    )
+
+    check_url: Optional[str] = None
+    try:
+        check_url = await ensure_crypto_giveaway_check(completed)
+    except Exception as exc:
+        logging.exception("Could not create Emoji Arena winner check")
+        await notify_admins(f"Эмодзи баттл: не удалось создать чек победителю: {escape(str(exc))}")
+
+    await bot.edit_message_text(
+        chat_id=CHANNEL_ID,
+        message_id=giveaway.message_id,
+        text=emoji_arena_result_text(completed),
+        reply_markup=mini_money2_claim_keyboard(check_url, kind="emoji_arena") if check_url else mini_money2_claim_keyboard(kind="emoji_arena"),
+        disable_web_page_preview=True,
+    )
+    completed_giveaways["emoji_arena"] = completed
+    active_giveaways.pop("emoji_arena", None)
+    schedule_message_cleanup(CHANNEL_ID, dice_message_ids)
+
+    if check_url:
+        try:
+            await bot.send_message(
+                winner["id"],
+                "\n".join(
+                    [
+                        "🎉 <b>Ты выиграл Эмодзи баттл</b>",
+                        "",
+                        f"💵 <b>Сумма чека:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+                        "🎁 Забрать приз можно кнопкой в итоговом посте или по кнопке ниже.",
+                    ]
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+                ),
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            logging.exception("Could not notify winner about Emoji Arena check")
+            await notify_admins(
+                f"Эмодзи баттл: чек создан, но победителю не отправилось сообщение: {escape(str(exc))}"
+            )
+
+    return f"Эмодзи баттл завершён. Победитель: {user_label(winner)}"
+
+
 async def finish_duel(giveaway: Giveaway) -> str:
     first, second = giveaway.participants
-    await bot.send_message(CHANNEL_ID, "🎲 Дуэль начинается, кидаем реальные кубики...")
+    duel_message_ids: List[int] = []
+    intro_message = await bot.send_message(CHANNEL_ID, "🎲 Дуэль начинается, кидаем реальные кубики...")
+    duel_message_ids.append(intro_message.message_id)
     first_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
     second_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+    duel_message_ids.extend([first_roll_message.message_id, second_roll_message.message_id])
     first_roll = first_roll_message.dice.value
     second_roll = second_roll_message.dice.value
 
     while first_roll == second_roll:
-        await bot.send_message(CHANNEL_ID, "🎲 Ничья на кубиках, кидаем ещё раз...")
+        tie_message = await bot.send_message(CHANNEL_ID, "🎲 Ничья на кубиках, кидаем ещё раз...")
+        duel_message_ids.append(tie_message.message_id)
         first_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
         second_roll_message = await bot.send_dice(chat_id=CHANNEL_ID, emoji="🎲")
+        duel_message_ids.extend([first_roll_message.message_id, second_roll_message.message_id])
         first_roll = first_roll_message.dice.value
         second_roll = second_roll_message.dice.value
 
@@ -1979,6 +2066,7 @@ async def finish_duel(giveaway: Giveaway) -> str:
         message_id=giveaway.message_id,
     )
     active_giveaways.pop("duel", None)
+    schedule_message_cleanup(CHANNEL_ID, duel_message_ids)
     return f"Победитель дуэли: {user_label(winner)}"
 
 
@@ -2136,6 +2224,9 @@ async def reroll_giveaway(kind: str) -> str:
     winners_count = min(completed.winners_count, len(completed.participants))
     new_winners = random.sample(completed.participants, winners_count)
     completed.winners = list(new_winners)
+    if kind in {"mini_money2", "darts_colors", "cube_survivor", "emoji_arena"}:
+        completed.meta.pop("claim_check_url", None)
+        completed.meta.pop("claim_check_id", None)
 
     if completed.message_id is not None:
         if kind == "duel":
@@ -2202,6 +2293,16 @@ async def reroll_giveaway(kind: str) -> str:
                 participants=list(completed.participants),
             )
             return await finish_cube_survivor(giveaway)
+        elif kind == "emoji_arena":
+            giveaway = Giveaway(
+                kind="emoji_arena",
+                prize=completed.prize,
+                max_players=MAX_EMOJI_ARENA_PLAYERS,
+                message_id=completed.message_id,
+                participants=list(completed.participants),
+                meta=dict(completed.meta),
+            )
+            return await finish_emoji_arena(giveaway)
         else:
             title = "Рерол розыгрыша"
             text = result_text(title, completed.prize, new_winners)
@@ -2243,6 +2344,10 @@ async def finish_giveaway_by_kind(kind: str) -> str:
         return await finish_cosmo(giveaway)
     if kind == "cube_survivor":
         return await finish_cube_survivor(giveaway)
+    if kind == "emoji_arena":
+        if len(giveaway.participants) < MIN_EMOJI_ARENA_PLAYERS:
+            return f"Для Эмодзи баттла нужно минимум {MIN_EMOJI_ARENA_PLAYERS} игроков."
+        return await finish_emoji_arena(giveaway)
     if kind == "classic":
         return await finish_classic(giveaway)
     if kind == "darts":
@@ -2264,7 +2369,7 @@ async def finish_giveaway_by_kind(kind: str) -> str:
 
 def status_text() -> str:
     lines = ["📊 <b>Текущий статус бота</b>", ""]
-    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "emoji_arena", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if giveaway:
             lines.append(f"• <b>{KIND_TITLES[kind]}</b>: активен, участников {len(giveaway.participants)}")
@@ -2289,7 +2394,7 @@ def active_giveaways_text() -> str:
     lines = ["🗂 <b>Активные розыгрыши</b>", ""]
 
     found = False
-    for kind in ("mini_money2", "darts_colors", "cube_survivor", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
+    for kind in ("mini_money2", "darts_colors", "cube_survivor", "emoji_arena", "watermelon", "cosmo", "mini", "classic", "duel", "darts", "bowling", "football"):
         giveaway = active_giveaways.get(kind)
         if not giveaway:
             continue
@@ -2394,6 +2499,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🤑 Создать Mini Babki 2", callback_data="create:mini_money2")],
         [InlineKeyboardButton(text="🎯 Дартс команды", callback_data="create:darts_colors")],
         [InlineKeyboardButton(text="🎲 Кубик на выбывание", callback_data="create:cube_survivor")],
+        [InlineKeyboardButton(text="🎮 Эмодзи баттл", callback_data="create:emoji_arena")],
         [InlineKeyboardButton(text="🍉 Арбузная фруттела", callback_data="create:watermelon")],
         [InlineKeyboardButton(text="🌌 Космо рулетка", callback_data="create:cosmo")],
         [InlineKeyboardButton(text="🎉 Создать мини", callback_data="create:mini")],
@@ -2531,6 +2637,7 @@ async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
         "mini_money2": MAX_MINI_PLAYERS,
         "darts_colors": MAX_DART_COLOR_PLAYERS,
         "cube_survivor": MAX_CUBE_SURVIVOR_PLAYERS,
+        "emoji_arena": MAX_EMOJI_ARENA_PLAYERS,
     }.get(kind, MAX_MINI_PLAYERS)
 
     giveaway = Giveaway(
@@ -2883,6 +2990,7 @@ async def create_handler(call: CallbackQuery) -> None:
         "mini_money2": "Пришли сумму приза в долларах для Mini Babki 2. Например: 25",
         "darts_colors": "Пришли сумму приза в долларах для Дартс команды. Например: 25",
         "cube_survivor": "Пришли сумму приза в долларах для Кубик на выбывание. Например: 25",
+        "emoji_arena": "Пришли сумму приза в долларах для Эмодзи баттла. Формат игры: от 6 до 20 игроков. Например: 25",
         "watermelon": "Пришли приз для Арбузной фруттелы.",
         "cosmo": "Пришли приз для Космо рулетки.",
         "mini": "Пришли приз для мини-розыгрыша.",
@@ -2988,7 +3096,7 @@ async def admin_flow(message: Message) -> None:
             await message.answer("Приз не должен быть пустым.")
             return
 
-        if kind in {"mini_money2", "darts_colors", "cube_survivor"}:
+        if kind in {"mini_money2", "darts_colors", "cube_survivor", "emoji_arena"}:
             if kind in active_giveaways:
                 await message.answer(f"Сначала заверши текущий {KIND_TITLES[kind]}.")
                 return
@@ -3029,6 +3137,11 @@ async def admin_flow(message: Message) -> None:
             pending_mini_money2_watchers[invoice_id] = asyncio.create_task(watch_mini_money2_invoice(invoice_id))
 
             admin_state.pop(message.from_user.id, None)
+            details_line = (
+                f"👥 <b>Формат:</b> от {MIN_EMOJI_ARENA_PLAYERS} до {MAX_EMOJI_ARENA_PLAYERS} игроков"
+                if kind == "emoji_arena"
+                else None
+            )
             await message.answer(
                 "\n".join(
                         [
@@ -3036,6 +3149,7 @@ async def admin_flow(message: Message) -> None:
                         "",
                         f"💵 <b>Приз розыгрыша:</b> ${prize_amount}",
                         f"💳 <b>К оплате с комиссией +10%:</b> ${payment_amount}",
+                        *( [details_line] if details_line else [] ),
                         "",
                         "После оплаты бот сам опубликует розыгрыш в канале.",
                     ]
@@ -3111,19 +3225,20 @@ async def create_and_publish(message: Message, kind: str, prize: str, winners_co
         kind=kind,
         prize=prize,
         winners_count=winners_count,
-        max_players=MAX_MINI_PLAYERS if kind in {"mini", "mini_money2"} else 6 if kind == "darts_colors" else MAX_CUBE_SURVIVOR_PLAYERS if kind == "cube_survivor" else MAX_WATERMELON_PLAYERS if kind == "watermelon" else MAX_COSMO_PLAYERS if kind == "cosmo" else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
+        max_players=MAX_MINI_PLAYERS if kind in {"mini", "mini_money2"} else 6 if kind == "darts_colors" else MAX_CUBE_SURVIVOR_PLAYERS if kind == "cube_survivor" else MAX_EMOJI_ARENA_PLAYERS if kind == "emoji_arena" else MAX_WATERMELON_PLAYERS if kind == "watermelon" else MAX_COSMO_PLAYERS if kind == "cosmo" else 2 if kind in {"duel", "darts", "bowling", "football"} else None,
         meta=meta or {},
     )
     await publish_giveaway(giveaway)
     admin_state.pop(message.from_user.id, None)
     await message.answer("Пост опубликован в канал.", reply_markup=admin_keyboard())
-    if kind in {"mini_money2", "darts_colors"}:
+    if kind in {"mini_money2", "darts_colors", "emoji_arena"}:
         await message.answer(
             "\n".join(
                 [
                     f"🤑 <b>{KIND_TITLES[kind]} опубликован</b>",
                     "",
                     f"💵 <b>Приз:</b> ${escape(str(giveaway.meta['prize_amount_usd']))}",
+                    *( [f"👥 <b>Формат:</b> от {MIN_EMOJI_ARENA_PLAYERS} до {MAX_EMOJI_ARENA_PLAYERS} игроков"] if kind == "emoji_arena" else [] ),
                     "💳 <b>Счёт на оплату:</b>",
                     giveaway.meta["crypto_invoice_url"],
                     "",
@@ -3198,7 +3313,7 @@ async def join_handler(call: CallbackQuery) -> None:
 
         participants_count = len(giveaway.participants)
         should_finish = (
-            kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor"} and giveaway.max_players and participants_count >= giveaway.max_players
+            kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor", "emoji_arena"} and giveaway.max_players and participants_count >= giveaway.max_players
         ) or (kind in {"duel", "darts", "bowling", "football"} and participants_count >= 2)
 
         if should_finish:
@@ -3229,6 +3344,11 @@ async def join_handler(call: CallbackQuery) -> None:
                     f"Готово. Ты занял слот {participants_count} и попал в {team_label} команду. "
                     f"Твои финальные числа: {slot_label}."
                 )
+            elif kind == "emoji_arena":
+                answer_text = (
+                    f"Готово. Ты вошёл в Эмодзи баттл. Сейчас участников: {participants_count}. "
+                    f"Автостарт сработает на {MAX_EMOJI_ARENA_PLAYERS} игроках."
+                )
             else:
                 answer_text = f"Готово. Сейчас участников: {participants_count}"
 
@@ -3236,7 +3356,7 @@ async def join_handler(call: CallbackQuery) -> None:
         await call.answer(answer_text)
         return
 
-    if kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor"}:
+    if kind in {"mini", "mini_money2", "darts_colors", "watermelon", "cosmo", "cube_survivor", "emoji_arena"}:
         await asyncio.sleep(0.7)
 
     if kind == "mini":
@@ -3248,6 +3368,9 @@ async def join_handler(call: CallbackQuery) -> None:
     elif kind == "darts_colors":
         result = await finish_darts_colors(giveaway_to_finish)
         answer_text = "Шестой игрок зашёл, Дартс команды уже сыграны."
+    elif kind == "emoji_arena":
+        result = await finish_emoji_arena(giveaway_to_finish)
+        answer_text = "Ты успел в Эмодзи баттл, победитель уже определён."
     elif kind == "watermelon":
         result = await finish_watermelon(giveaway_to_finish)
         answer_text = "Ты успел во фруттелу, победители уже определены."
@@ -3274,7 +3397,7 @@ async def join_handler(call: CallbackQuery) -> None:
     await call.answer(answer_text)
 
 
-@dp.callback_query(F.data.in_({"claim:mini_money2", "claim:darts_colors", "claim:cube_survivor"}))
+@dp.callback_query(F.data.in_({"claim:mini_money2", "claim:darts_colors", "claim:cube_survivor", "claim:emoji_arena"}))
 async def claim_crypto_prize(call: CallbackQuery) -> None:
     remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     kind = call.data.split(":", 1)[1]
