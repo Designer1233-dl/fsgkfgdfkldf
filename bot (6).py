@@ -31,7 +31,7 @@ PROFILES_FILE = Path(__file__).with_name("user_profiles.json")
 PENDING_MINI_MONEY2_FILE = Path(__file__).with_name("pending_mini_money2_invoices.json")
 
 # Меняй только эту одну строку.
-BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", "от Илюшки"
+BRAND_USERNAME, BRAND_AUTHOR = "@brazers_promo", ""
 
 MAX_MINI_PLAYERS = 6
 MAX_CUBE_SURVIVOR_PLAYERS = 6
@@ -654,11 +654,11 @@ async def ensure_profile_withdraw_check(profile: dict) -> str:
 
 
 def signature_line() -> str:
-    return f"{escape(BRAND_USERNAME)} • {escape(BRAND_AUTHOR)}"
+    return escape(BRAND_USERNAME)
 
 
 def branded_title(title: str) -> str:
-    return f"{title} {escape(BRAND_AUTHOR)}"
+    return title
 
 
 def promo_lines() -> List[str]:
@@ -856,7 +856,7 @@ def cosmo_text(giveaway: Giveaway) -> str:
 def cube_survivor_text(giveaway: Giveaway) -> str:
     lines = [
         f"🎲 <b>{branded_title('КУБИК НА ВЫБЫВАНИЕ')}</b>",
-        f"🎁 <b>Приз:</b> {escape(giveaway.prize)}",
+        f"💵 <b>Приз:</b> ${escape(str(giveaway.meta.get('prize_amount_usd', giveaway.prize)))}",
         f"👥 <b>Игроков:</b> {len(giveaway.participants)}/{giveaway.max_players}",
         "🔥 <b>Механика:</b> кубик поэтапно выбивает игроков до одного победителя.",
         "📋 <b>Список игроков:</b>",
@@ -868,7 +868,7 @@ def cube_survivor_text(giveaway: Giveaway) -> str:
 def classic_text(giveaway: Giveaway) -> str:
     conditions = subscription_lines(giveaway.meta.get("subscription_targets") or [])
     lines = [
-        f"🎊 <b>{branded_title('НОВЫЙ РОЗЫГРЫШ')}</b>",
+        f"🎊 <b>{branded_title('РОЗЫГРЫШ')}</b>",
         f"🏆 <b>Приз:</b> {escape(giveaway.prize)}",
         f"🥇 <b>Количество победителей:</b> {giveaway.winners_count}",
         *(
@@ -1011,10 +1011,11 @@ def cube_survivor_result_text(completed: CompletedGiveaway) -> str:
     winner = completed.winners[0]
     lines = [
         f"🎲 <b>{branded_title('КУБИК НА ВЫБЫВАНИЕ')}</b>",
-        f"🎁 <b>Приз:</b> {escape(completed.prize)}",
+        f"💵 <b>Приз:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
         f"🏆 <b>Победитель:</b> {user_label(winner)}",
         f"🎯 <b>Финальный бросок:</b> {escape(str(completed.meta.get('final_roll') or '?'))}",
         f"🔢 <b>Финальные числа победителя:</b> {escape(str(completed.meta.get('winner_numbers_text') or '?'))}",
+        f"🎁 <b>Чек привязан:</b> {'да' if completed.meta.get('claim_check_id') else 'ожидает'}",
         "📜 <b>Ход игры:</b>",
         *[f"• {escape(str(line))}" for line in completed.meta.get("history_lines", [])[:12]],
         f"🔖 {signature_line()}",
@@ -1220,8 +1221,6 @@ def profile_keyboard(profile: dict) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     if profile.get("pending_check_url"):
         rows.append([InlineKeyboardButton(text="Open Active Check", url=str(profile["pending_check_url"]))])
-    elif profile_balance_decimal(profile) > 0:
-        rows.append([InlineKeyboardButton(text="Withdraw To CryptoBot", callback_data="profile:withdraw")])
     rows.append([InlineKeyboardButton(text="Refresh Profile", callback_data="profile:open")])
     rows.append([InlineKeyboardButton(text="Open Channel", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1546,7 +1545,7 @@ async def send_mini_money2_check_to_winner(completed: CompletedGiveaway) -> None
 async def reset_completed_check_state(completed: CompletedGiveaway) -> None:
     completed.meta.pop("claim_check_url", None)
     completed.meta.pop("claim_check_id", None)
-    if completed.kind in {"mini_money2", "darts_colors"} and completed.message_id is not None:
+    if completed.kind in {"mini_money2", "darts_colors", "cube_survivor"} and completed.message_id is not None:
         try:
             await bot.edit_message_reply_markup(
                 chat_id=CHANNEL_ID,
@@ -1898,21 +1897,53 @@ async def finish_cube_survivor(giveaway: Giveaway) -> str:
         winners_count=1,
         message_id=giveaway.message_id,
         meta={
+            **dict(giveaway.meta),
             "final_roll": final_roll,
             "winner_numbers_text": ", ".join(str(number) for number in final_numbers[winner_index]),
             "history_lines": history_lines,
         },
     )
+
+    try:
+        check_url = await ensure_crypto_giveaway_check(completed)
+    except Exception as exc:
+        logging.exception("Could not create Cube Survivor winner check")
+        await notify_admins(f"Кубик на выбывание: не удалось создать чек победителю: {escape(str(exc))}")
+        return f"Победитель Кубик на выбывание: {user_label(winner)}"
+
     await bot.edit_message_text(
         chat_id=CHANNEL_ID,
         message_id=giveaway.message_id,
         text=cube_survivor_result_text(completed),
-        reply_markup=public_keyboard("cube_survivor", active=False),
+        reply_markup=mini_money2_claim_keyboard(check_url, kind="cube_survivor"),
         disable_web_page_preview=True,
     )
     completed_giveaways["cube_survivor"] = completed
     active_giveaways.pop("cube_survivor", None)
     schedule_message_cleanup(CHANNEL_ID, temp_message_ids)
+
+    try:
+        await bot.send_message(
+            winner["id"],
+            "\n".join(
+                [
+                    "🎉 <b>Ты выиграл Кубик на выбывание</b>",
+                    "",
+                    f"💵 <b>Сумма чека:</b> ${escape(str(completed.meta['prize_amount_usd']))}",
+                    "🎁 Забрать приз можно кнопкой в итоговом посте или по кнопке ниже.",
+                ]
+            ),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
+            ),
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        logging.exception("Could not notify winner about Cube Survivor check")
+        await notify_admins(
+            f"Кубик на выбывание: чек создан, но победителю не отправилось сообщение: {escape(str(exc))}"
+        )
+
     return f"Кубик на выбывание завершён. Победитель: {user_label(winner)}"
 
 
@@ -2325,8 +2356,6 @@ async def send_crypto_checks_message(message: Message, confirm_delete_all: bool 
 
 
 def profile_text(profile: dict) -> str:
-    available = profile_balance_decimal(profile)
-    hold = profile_hold_decimal(profile)
     username_line = (
         f"@{escape(str(profile['username']))}"
         if profile.get("username")
@@ -2336,10 +2365,7 @@ def profile_text(profile: dict) -> str:
         "👤 <b>Профиль</b>",
         "",
         f"🆔 <b>Пользователь:</b> {username_line}",
-        f"💰 <b>Баланс:</b> ${available:.2f}",
     ]
-    if hold > 0:
-        lines.append(f"⏳ <b>В удержании:</b> ${hold:.2f}")
     if profile.get("pending_check_id"):
         lines.append(f"🧾 <b>Активный чек:</b> <code>{escape(str(profile['pending_check_id']))}</code>")
     lines.extend(["", f"🔖 {signature_line()}"])
@@ -2350,8 +2376,6 @@ def profile_keyboard(profile: dict) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     if profile.get("pending_check_url"):
         rows.append([InlineKeyboardButton(text="🎁 Открыть активный чек", url=str(profile["pending_check_url"]))])
-    elif profile_balance_decimal(profile) > 0:
-        rows.append([InlineKeyboardButton(text="💸 Вывести баланс", callback_data="profile:withdraw")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить профиль", callback_data="profile:open")])
     rows.append([InlineKeyboardButton(text="📣 Открыть канал", url=f"https://t.me/{BRAND_USERNAME.lstrip('@')}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2378,7 +2402,6 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎯 Создать дартс", callback_data="create:darts")],
         [InlineKeyboardButton(text="🎳 Создать боулинг", callback_data="create:bowling")],
         [InlineKeyboardButton(text="⚽ Создать футбол", callback_data="create:football")],
-        [InlineKeyboardButton(text="💼 Балансы", callback_data="balances:menu")],
         [InlineKeyboardButton(text="💳 Crypto Pay", callback_data="crypto:menu")],
         [InlineKeyboardButton(text="🗂 Активные посты", callback_data="manage")],
         [InlineKeyboardButton(text="📣 Рассылка", callback_data="broadcast:start")],
@@ -2387,16 +2410,6 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="👑 Админы", callback_data="admins:menu")])
     rows.append([InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def balances_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Начислить по @username", callback_data="balances:add")],
-            [InlineKeyboardButton(text="➖ Снять по @username", callback_data="balances:subtract")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")],
-        ]
-    )
 
 
 def mini_money2_invoice_keyboard(invoice_id: int, invoice_url: str) -> InlineKeyboardMarkup:
@@ -2411,10 +2424,6 @@ def mini_money2_invoice_keyboard(invoice_id: int, invoice_url: str) -> InlineKey
 
 async def send_profile_overview(message: Message, user_data: Any) -> None:
     profile = ensure_user_profile(user_data.id, user_data.username, user_data.first_name)
-    try:
-        await sync_profile_pending_check(profile)
-    except Exception:
-        logging.exception("Could not sync profile pending check")
     await message.answer(profile_text(profile), reply_markup=profile_keyboard(profile), disable_web_page_preview=True)
 
 
@@ -2500,6 +2509,8 @@ async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
     if not pending:
         return "Счёт уже не ожидает оплаты."
 
+    kind = str(pending.get("kind") or "mini_money2")
+
     invoice = await find_pending_mini_money2_invoice(invoice_id, pending)
     if not invoice:
         return "Счёт пока не найден через API Crypto Pay. Автопроверка продолжится, попробуй ещё раз через 15-30 секунд."
@@ -2513,15 +2524,22 @@ async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
             return f"Счёт больше не активен. Статус: {status}."
         return f"Счёт ещё не оплачен. Текущий статус: {status or 'unknown'}."
 
-    if "mini_money2" in active_giveaways:
-        return "Оплата есть, но Mini Babki 2 уже активен. Сначала заверши текущий розыгрыш."
+    if kind in active_giveaways:
+        return f"Оплата есть, но {KIND_TITLES.get(kind, kind)} уже активен. Сначала заверши текущий розыгрыш."
+
+    max_players = {
+        "mini_money2": MAX_MINI_PLAYERS,
+        "darts_colors": MAX_DART_COLOR_PLAYERS,
+        "cube_survivor": MAX_CUBE_SURVIVOR_PLAYERS,
+    }.get(kind, MAX_MINI_PLAYERS)
 
     giveaway = Giveaway(
-        kind="mini_money2",
+        kind=kind,
         prize=f"${pending['prize_amount_usd']}",
         winners_count=1,
-        max_players=MAX_MINI_PLAYERS,
+        max_players=max_players,
         meta={
+            "kind": kind,
             "prize_amount_usd": pending["prize_amount_usd"],
             "payment_amount_usd": pending["payment_amount_usd"],
             "crypto_invoice_url": pending["crypto_invoice_url"],
@@ -2534,7 +2552,7 @@ async def publish_paid_mini_money2_invoice(invoice_id: int) -> str:
     pending_mini_money2_invoices.pop(invoice_id, None)
     save_pending_mini_money2_invoices()
     return (
-        "Оплата подтверждена. Mini Babki 2 опубликован в канале.\n"
+        f"Оплата подтверждена. {KIND_TITLES.get(kind, kind)} опубликован в канале.\n"
         f"Приз: ${pending['prize_amount_usd']}\n"
         f"Оплачено по счёту: ${pending['payment_amount_usd']}"
     )
@@ -2568,41 +2586,6 @@ async def profile_open_handler(call: CallbackQuery) -> None:
     remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     await send_profile_overview(call.message, call.from_user)
     await call.answer()
-
-
-@dp.callback_query(F.data == "profile:withdraw")
-async def profile_withdraw_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    profile = ensure_user_profile(call.from_user.id, call.from_user.username, call.from_user.first_name)
-
-    try:
-        check_url = await ensure_profile_withdraw_check(profile)
-    except Exception as exc:
-        logging.exception("Could not withdraw profile balance")
-        await call.answer(f"Не удалось вывести баланс: {escape(str(exc))}", show_alert=True)
-        return
-
-    if profile.get("pending_check_url") != check_url:
-        profile["pending_check_url"] = check_url
-        save_user_profiles()
-
-    await call.message.answer(
-        profile_text(profile),
-        reply_markup=profile_keyboard(profile),
-        disable_web_page_preview=True,
-    )
-    try:
-        await bot.send_message(
-            call.from_user.id,
-            f"🎁 Твой чек на ${escape(str(profile.get('pending_check_amount_usd', '0.00')))} готов.",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="🎁 Открыть чек", url=check_url)]]
-            ),
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        logging.exception("Could not send profile withdrawal check to DM")
-    await call.answer("Чек на вывод готов", show_alert=True)
 
 
 @dp.callback_query(F.data == "open_admin")
@@ -2640,34 +2623,6 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
     await call.answer()
 
 
-@dp.callback_query(F.data == "balances:menu")
-async def balances_menu_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    if not is_admin(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    await call.message.answer(
-        "Управление балансами.\nМожно начислить или снять сумму по @username.",
-        reply_markup=balances_keyboard(),
-    )
-    await call.answer()
-
-
-@dp.callback_query(F.data.in_({"balances:add", "balances:subtract"}))
-async def balances_action_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    if not is_admin(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    action = "add" if call.data.endswith("add") else "subtract"
-    admin_state[call.from_user.id] = {"kind": f"balance_{action}", "step": "username"}
-    prompt = "Пришли @username пользователя." if action == "add" else "Пришли @username пользователя для списания."
-    await call.message.answer(prompt, reply_markup=balances_keyboard())
-    await call.answer()
-
-
 @dp.callback_query(F.data.startswith("mini2:invoice:"))
 async def mini_money2_invoice_actions(call: CallbackQuery) -> None:
     remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
@@ -2679,19 +2634,21 @@ async def mini_money2_invoice_actions(call: CallbackQuery) -> None:
     invoice_id = int(invoice_id_raw)
 
     if action == "cancel":
+        pending = pending_mini_money2_invoices.get(invoice_id) or {}
+        title = KIND_TITLES.get(str(pending.get("kind") or "mini_money2"), "розыгрыша")
         pending_mini_money2_invoices.pop(invoice_id, None)
         save_pending_mini_money2_invoices()
         watcher = pending_mini_money2_watchers.pop(invoice_id, None)
         if watcher:
             watcher.cancel()
-        await call.message.answer("Ожидание оплаты Mini Babki 2 остановлено.", reply_markup=admin_keyboard())
+        await call.message.answer(f"Ожидание оплаты для {title} остановлено.", reply_markup=admin_keyboard())
         await call.answer("Отменено")
         return
 
     try:
         result = await publish_paid_mini_money2_invoice(invoice_id)
     except Exception as exc:
-        logging.exception("Could not check Mini Babki 2 invoice")
+        logging.exception("Could not check crypto invoice")
         await call.message.answer(f"Ошибка проверки оплаты: {escape(str(exc))}", reply_markup=admin_keyboard())
         await call.answer("Ошибка", show_alert=True)
         return
@@ -2925,7 +2882,7 @@ async def create_handler(call: CallbackQuery) -> None:
     prompts = {
         "mini_money2": "Пришли сумму приза в долларах для Mini Babki 2. Например: 25",
         "darts_colors": "Пришли сумму приза в долларах для Дартс команды. Например: 25",
-        "cube_survivor": "Пришли приз для игры Кубик на выбывание.",
+        "cube_survivor": "Пришли сумму приза в долларах для Кубик на выбывание. Например: 25",
         "watermelon": "Пришли приз для Арбузной фруттелы.",
         "cosmo": "Пришли приз для Космо рулетки.",
         "mini": "Пришли приз для мини-розыгрыша.",
@@ -2998,54 +2955,6 @@ async def admin_flow(message: Message) -> None:
         )
         return
 
-    if kind in {"balance_add", "balance_subtract"} and step == "username":
-        profile = profile_by_username(text)
-        if not profile:
-            await message.answer("Пользователь с таким @username не найден в профилях бота.")
-            return
-
-        state["username"] = str(profile.get("username") or "")
-        state["step"] = "amount"
-        action_text = "начислить" if kind == "balance_add" else "снять"
-        await message.answer(f"Пришли сумму в USD, которую нужно {action_text} для {user_label(profile)}.")
-        return
-
-    if kind in {"balance_add", "balance_subtract"} and step == "amount":
-        profile = profile_by_username(state.get("username", ""))
-        if not profile:
-            admin_state.pop(message.from_user.id, None)
-            await message.answer("Профиль пользователя больше не найден.", reply_markup=balances_keyboard())
-            return
-
-        try:
-            amount = usd_decimal(text)
-        except InvalidOperation:
-            await message.answer("Пришли корректную сумму в USD. Например: 5 или 12.50")
-            return
-
-        current_balance = profile_balance_decimal(profile)
-        if kind == "balance_subtract" and current_balance < amount:
-            await message.answer(
-                f"Недостаточно средств на балансе. Сейчас доступно: ${current_balance:.2f}",
-                reply_markup=balances_keyboard(),
-            )
-            return
-
-        change_profile_balance(profile, amount if kind == "balance_add" else -amount)
-        admin_state.pop(message.from_user.id, None)
-        action_text = "начислен" if kind == "balance_add" else "списан"
-        await message.answer(
-            "\n".join(
-                [
-                    f"Баланс {action_text} для {user_label(profile)}.",
-                    f"Сумма: ${amount:.2f}",
-                    f"Новый баланс: ${profile['balance_usd']}",
-                ]
-            ),
-            reply_markup=balances_keyboard(),
-        )
-        return
-
     if kind == "crypto_delete_manual" and step == "check_id":
         check_id = parse_check_id(text)
         if not check_id:
@@ -3079,7 +2988,7 @@ async def admin_flow(message: Message) -> None:
             await message.answer("Приз не должен быть пустым.")
             return
 
-        if kind in {"mini_money2", "darts_colors"}:
+        if kind in {"mini_money2", "darts_colors", "cube_survivor"}:
             if kind in active_giveaways:
                 await message.answer(f"Сначала заверши текущий {KIND_TITLES[kind]}.")
                 return
@@ -3103,6 +3012,7 @@ async def admin_flow(message: Message) -> None:
 
             invoice_id = int(invoice["invoice_id"])
             pending_mini_money2_invoices[invoice_id] = {
+                "kind": kind,
                 "creator_id": message.from_user.id,
                 "prize_amount_usd": prize_amount,
                 "payment_amount_usd": payment_amount,
@@ -3364,7 +3274,7 @@ async def join_handler(call: CallbackQuery) -> None:
     await call.answer(answer_text)
 
 
-@dp.callback_query(F.data.in_({"claim:mini_money2", "claim:darts_colors"}))
+@dp.callback_query(F.data.in_({"claim:mini_money2", "claim:darts_colors", "claim:cube_survivor"}))
 async def claim_crypto_prize(call: CallbackQuery) -> None:
     remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
     kind = call.data.split(":", 1)[1]
@@ -3379,12 +3289,11 @@ async def claim_crypto_prize(call: CallbackQuery) -> None:
         return
 
     try:
-        profile = ensure_user_profile(call.from_user.id, call.from_user.username, call.from_user.first_name)
-        check_url = await ensure_profile_withdraw_check(profile)
+        check_url = await ensure_crypto_giveaway_check(completed)
     except Exception as exc:
-        logging.exception("Could not withdraw %s balance", kind)
-        await notify_admins(f"{KIND_TITLES[kind]}: ошибка вывода баланса победителя: {escape(str(exc))}")
-        await call.answer("Не удалось вывести баланс, админы уже получили уведомление", show_alert=True)
+        logging.exception("Could not create %s winner check on claim", kind)
+        await notify_admins(f"{KIND_TITLES[kind]}: не удалось подготовить чек победителю: {escape(str(exc))}")
+        await call.answer("Не удалось подготовить чек, админы уже получили уведомление", show_alert=True)
         return
 
     try:
@@ -3393,7 +3302,7 @@ async def claim_crypto_prize(call: CallbackQuery) -> None:
             "\n".join(
                 [
                     "🎁 <b>Твой чек готов</b>",
-                    f"💵 <b>Сумма чека:</b> ${escape(str(profile.get('pending_check_amount_usd', '0.00')))}",
+                    f"💵 <b>Сумма чека:</b> ${escape(str(completed.meta.get('prize_amount_usd', completed.prize)))}",
                 ]
             ),
             reply_markup=InlineKeyboardMarkup(
