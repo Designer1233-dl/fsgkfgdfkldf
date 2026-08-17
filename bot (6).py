@@ -2592,6 +2592,18 @@ def sync_pending_mini_money2_invoice_meta(pending: dict, invoice: dict) -> None:
         save_pending_mini_money2_invoices()
 
 
+def has_pending_paid_invoice(kind: Optional[str] = None, creator_id: Optional[int] = None) -> bool:
+    for pending in pending_mini_money2_invoices.values():
+        pending_kind = str(pending.get("kind") or "mini_money2")
+        pending_creator_id = pending.get("creator_id")
+        if kind is not None and pending_kind != kind:
+            continue
+        if creator_id is not None and pending_creator_id != creator_id:
+            continue
+        return True
+    return False
+
+
 async def find_pending_mini_money2_invoice(invoice_id: int, pending: dict) -> Optional[dict]:
     direct = await get_crypto_invoices(invoice_ids=[invoice_id], count=1)
     for invoice in direct:
@@ -3100,7 +3112,7 @@ async def admin_flow(message: Message) -> None:
             if kind in active_giveaways:
                 await message.answer(f"Сначала заверши текущий {KIND_TITLES[kind]}.")
                 return
-            if pending_mini_money2_invoices:
+            if has_pending_paid_invoice(kind=kind):
                 await message.answer(f"Уже есть неоплаченный или ожидающий оплаты счёт для {KIND_TITLES[kind]}.")
                 return
 
