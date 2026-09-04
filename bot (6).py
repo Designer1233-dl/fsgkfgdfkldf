@@ -2518,7 +2518,6 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="⚽ Футбол", callback_data="create:football")],
         [
-            InlineKeyboardButton(text="💼 Балансы", callback_data="balances:menu"),
             InlineKeyboardButton(text="💳 Crypto Pay", callback_data="crypto:menu"),
         ],
         [
@@ -2530,17 +2529,6 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="👑 Админы", callback_data="admins:menu")])
     rows.append([InlineKeyboardButton(text="🧹 Сбросить ввод", callback_data="reset")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def balances_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Начислить по @username", callback_data="balances:add")],
-            [InlineKeyboardButton(text="➖ Снять по @username", callback_data="balances:subtract")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")],
-        ]
-    )
-
 
 def mini_money2_invoice_keyboard(invoice_id: int, invoice_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -2827,34 +2815,6 @@ async def simple_admin_actions(call: CallbackQuery) -> None:
     else:
         await call.message.answer("Возвращаю панель.", reply_markup=admin_keyboard())
 
-    await call.answer()
-
-
-@dp.callback_query(F.data == "balances:menu")
-async def balances_menu_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    if not is_admin(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    await call.message.answer(
-        "Управление балансами.\nМожно начислить или снять сумму по @username.",
-        reply_markup=balances_keyboard(),
-    )
-    await call.answer()
-
-
-@dp.callback_query(F.data.in_({"balances:add", "balances:subtract"}))
-async def balances_action_handler(call: CallbackQuery) -> None:
-    remember_user(call.from_user.id, call.from_user.username, call.from_user.first_name)
-    if not is_admin(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    action = "add" if call.data.endswith("add") else "subtract"
-    admin_state[call.from_user.id] = {"kind": f"balance_{action}", "step": "username"}
-    prompt = "Пришли @username пользователя." if action == "add" else "Пришли @username пользователя для списания."
-    await call.message.answer(prompt, reply_markup=balances_keyboard())
     await call.answer()
 
 
@@ -3188,52 +3148,9 @@ async def admin_flow(message: Message) -> None:
         )
         return
 
-    if kind in {"balance_add", "balance_subtract"} and step == "username":
-        profile = profile_by_username(text)
-        if not profile:
-            await message.answer("Пользователь с таким @username не найден в профилях бота.")
-            return
-
-        state["username"] = str(profile.get("username") or "")
-        state["step"] = "amount"
-        action_text = "начислить" if kind == "balance_add" else "снять"
-        await message.answer(f"Пришли сумму в USD, которую нужно {action_text} для {user_label(profile)}.")
-        return
-
-    if kind in {"balance_add", "balance_subtract"} and step == "amount":
-        profile = profile_by_username(state.get("username", ""))
-        if not profile:
-            admin_state.pop(message.from_user.id, None)
-            await message.answer("Профиль пользователя больше не найден.", reply_markup=balances_keyboard())
-            return
-
-        try:
-            amount = usd_decimal(text)
-        except InvalidOperation:
-            await message.answer("Пришли корректную сумму в USD. Например: 5 или 12.50")
-            return
-
-        current_balance = profile_balance_decimal(profile)
-        if kind == "balance_subtract" and current_balance < amount:
-            await message.answer(
-                f"Недостаточно средств на балансе. Сейчас доступно: ${current_balance:.2f}",
-                reply_markup=balances_keyboard(),
-            )
-            return
-
-        change_profile_balance(profile, amount if kind == "balance_add" else -amount)
+    if kind in {"balance_add", "balance_subtract"}:
         admin_state.pop(message.from_user.id, None)
-        action_text = "начислен" if kind == "balance_add" else "списан"
-        await message.answer(
-            "\n".join(
-                [
-                    f"Баланс {action_text} для {user_label(profile)}.",
-                    f"Сумма: ${amount:.2f}",
-                    f"Новый баланс: ${profile['balance_usd']}",
-                ]
-            ),
-            reply_markup=balances_keyboard(),
-        )
+        await message.answer("Раздел балансов отключен.", reply_markup=admin_keyboard())
         return
 
     if kind == "crypto_delete_manual" and step == "check_id":
